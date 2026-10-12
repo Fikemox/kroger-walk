@@ -346,7 +346,8 @@ function createFirstPerson(ctx) {
         }
         const q = ctx.qty(p.key);
         if (q) text(g, x + wAll - 3, y0, `x${q}`.padStart(3), '#0b0d13', '#8be36f');
-        const tag = p.item.custom ? 'write-in' : p.was ? `$${p.price.toFixed(2)}!` : `$${p.price.toFixed(2)}`;
+        const tag = p.item.custom ? 'write-in' : !p.price ? (wAll >= 16 ? 'price at store' : 'at store')
+          : p.was ? `$${p.price.toFixed(2)}!` : `$${p.price.toFixed(2)}`;
         text(g, x + Math.max(0, Math.floor((wAll - tag.length - 2) / 2)), y0 + ART_H, `[${tag}]`, p.was ? '#0b0d13' : '#ffd84a', p.was ? '#ffd84a' : (sel ? HILITE : undefined));
         const label = (wrap(p.label, wAll, 1)[0] || '');
         text(g, x, y0 + ART_H + 1, center(label, wAll).padEnd(wAll), sel ? '#0b0d13' : DIM, sel ? '#ffd84a' : undefined);
@@ -391,6 +392,7 @@ function createFirstPerson(ctx) {
     const where = p.loc && p.loc.aisle
       ? `aisle ${p.loc.aisle}${p.loc.side ? ' ' + p.loc.side : ''}${p.loc.bay ? ' · bay ' + p.loc.bay : ''}${p.loc.shelf ? ' · shelf ' + p.loc.shelf : ''}` : '';
     const price = p.item.custom ? '<span class="fi-dim">your write-in</span>'
+      : !p.price ? '<span class="fi-dim" title="Kroger has no online price for this item at your store">price at store</span>'
       : p.was ? `<span class="fi-sale">SALE $${p.price.toFixed(2)}</span> <s>$${p.was.toFixed(2)}</s>` : `$${p.price.toFixed(2)}`;
     fiBody.innerHTML = `
       <div class="fi-name">${escHtml(p.name)}</div>

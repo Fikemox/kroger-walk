@@ -321,7 +321,9 @@ function grouped() {
   for (const e of Object.values(cart)) (groups[e.sec] = groups[e.sec] || []).push(e);
   return ORDER.filter(id => groups[id]).map(id => [SEC[id], groups[id]]);
 }
-const totals = () => Object.values(cart).reduce((t, e) => ({ n: t.n + e.qty, sum: t.sum + e.qty * (e.price || 0) }), { n: 0, sum: 0 });
+// Kroger leaves some products unpriced for a store; those show "price at store" and stay out of the estimate
+const totals = () => Object.values(cart).reduce((t, e) => ({ n: t.n + e.qty, sum: t.sum + e.qty * (e.price || 0), unpriced: t.unpriced + (e.price ? 0 : 1) }), { n: 0, sum: 0, unpriced: 0 });
+const unpricedNote = t => (t.unpriced ? ` + ${t.unpriced} priced at store` : '');
 const krogerUrl = name => 'https://www.kroger.com/search?query=' + encodeURIComponent(name.replace(/\(.*?\)/g, '').trim()) + '&searchType=default_search';
 
 function renderCart() {
@@ -331,11 +333,11 @@ function renderCart() {
   $('cartList').innerHTML = g.length ? g.map(([s, items]) =>
     `<div class="grp">${esc(title(s))}</div>` + items.map(e => `
       <div class="ci"><span class="q">${e.qty}×</span><span class="n" title="${esc(e.name)}">${esc(e.name)}${e.sentQty && e.sentQty >= e.qty ? ' <span style="color:var(--green)" title="in your Kroger cart">✓</span>' : ''}</span>
-      <span class="pr">${e.price ? money(e.price * e.qty) : '—'}</span>
+      <span class="pr">${e.price ? money(e.price * e.qty) : '<span class="dim">at store</span>'}</span>
       <button data-k="${esc(e.key)}" data-d="1">+</button><button data-k="${esc(e.key)}" data-d="-1">−</button>
       <a href="${krogerUrl(e.name)}" target="_blank" title="Find on kroger.com">↗</a></div>`).join('')).join('')
     : `<div class="empty">  _______\n |       |   your cart is empty.\n |_______|   go walk around!\n  o     o</div>`;
-  $('cartTotals').innerHTML = `<span>${t.n} item${t.n === 1 ? '' : 's'}</span><span>est. <b>${money(t.sum)}</b></span>`;
+  $('cartTotals').innerHTML = `<span>${t.n} item${t.n === 1 ? '' : 's'}</span><span>est. <b>${money(t.sum)}</b>${t.unpriced ? `<span class="dim" title="Kroger has no online price for ${t.unpriced === 1 ? 'one item' : `${t.unpriced} items`} at your store"> +${t.unpriced}?</span>` : ''}</span>`;
   $('cart').classList.add('flash'); clearTimeout(renderCart.t); renderCart.t = setTimeout(() => $('cart').classList.remove('flash'), 120);
 }
 $('cartList').addEventListener('click', e => {
@@ -346,7 +348,7 @@ $('cartList').addEventListener('click', e => {
 function listText() {
   const t = totals();
   const out = [`KROGER LIST — ${new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`,
-    `${t.n} items · est. ${money(t.sum)}`, ''];
+    `${t.n} items · est. ${money(t.sum)}${unpricedNote(t)}`, ''];
   for (const [s, items] of grouped()) {
     out.push(title(s).toUpperCase());
     for (const e of items) out.push(`[ ] ${e.qty} × ${e.name}`);
@@ -466,7 +468,7 @@ function renderBrowse() {
     if (it.writein) return `<div class="row write ${i === br.idx ? 'sel' : ''}" data-i="${i}"><span class="cur">${i === br.idx ? '▶' : ''}</span><span class="nm">✎ ${esc(it.name)}</span></div>`;
     const q = qty(it.key);
     const price = it.custom ? '<span style="color:var(--dim)">write-in</span>'
-      : it.was ? `<span class="sale">SALE ${money(it.price)}</span> <s>${money(it.was)}</s>` : money(it.price);
+      : it.was ? `<span class="sale">SALE ${money(it.price)}</span> <s>${money(it.was)}</s>` : it.price ? money(it.price) : '<span style="color:var(--dim)">price at store</span>';
     return `<div class="row ${i === br.idx ? 'sel' : ''}" data-i="${i}">
       <span class="cur">${i === br.idx ? '▶' : ''}</span><span class="nm">${esc(it.name)}</span><span class="dots"></span>
       <span class="pr">${price}</span>
@@ -564,9 +566,11 @@ function openCheckout() {
   if (!t.n) out.push('', ctr('your cart is empty.'), ctr('the cashier stares at you.'), '');
   for (const [s, items] of grouped()) {
     out.push(trunc(title(s).toUpperCase(), w));
-    for (const e of items) out.push(row(` ${String(e.qty).padStart(2)} ${trunc(e.name, w - 13)}`, e.price ? (e.price * e.qty).toFixed(2) : '--'));
+    for (const e of items) out.push(row(` ${String(e.qty).padStart(2)} ${trunc(e.name, w - 13)}`, e.price ? (e.price * e.qty).toFixed(2) : 'AT STORE'));
   }
-  out.push(line, row(`ITEMS ${t.n}`, `EST TOTAL ${money(t.sum)}`), '',
+  out.push(line, row(`ITEMS ${t.n}`, `EST TOTAL ${money(t.sum)}`));
+  if (t.unpriced) out.push(row('', `+ ${t.unpriced} PRICED AT STORE`));
+  out.push('',
     ctr('prices are rough guesses'), ctr('saves: your sanity'), '', ctr('|| ||| | || ||| || | ||| | ||'), ctr('THANK YOU FOR SHOPPING'));
   openModal(`
     <div class="ttl"><span>╡ Checkout ╞</span><span style="color:var(--dim)">lane ${lane}</span></div>
@@ -828,7 +832,7 @@ function renderMatch() {
     if (!c) bot = r.loading ? '<span class="dim">checking the shelves…</span>' : `<span style="color:var(--red)">${esc(r.err || 'no match')}</span>`;
     else {
       const price = c.promo && c.promo < c.price ? `<span style="color:var(--yellow)">SALE $${c.promo.toFixed(2)}</span> <s class="dim">$${c.price.toFixed(2)}</s>`
-        : c.price ? `$${c.price.toFixed(2)}` : '<span class="dim">no price</span>';
+        : c.price ? `$${c.price.toFixed(2)}` : '<span class="dim">price at store</span>';
       const stock = /OUT_OF_STOCK/.test(c.stock || '') ? ' <span style="color:var(--red)">out of stock</span>'
         : /LOW/.test(c.stock || '') ? ' <span style="color:var(--yellow)">low stock</span>' : '';
       bot = `↳ ${esc(c.name)} <span class="dim">${esc(c.size)}</span> · ${price}${c.aisle ? ` <span class="dim">· ${esc(c.aisle)}</span>` : ''}${stock}`;
