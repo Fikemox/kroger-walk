@@ -1,0 +1,5 @@
+# Copy to .dev.vars for `npm run dev`. In production, set each one with `npx wrangler secret put NAME`.
+KROGER_CLIENT_ID=your-app-client-id
+KROGER_CLIENT_SECRET=your-app-client-secret
+# any long random string; changing it signs everyone out
+SESSION_KEY=replace-with-32-plus-random-characters

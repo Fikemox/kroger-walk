@@ -2,20 +2,43 @@
 
 Grocery shopping as an ASCII walking game. You walk a top-down Kroger floor plan, step into an aisle to get a first-person shelf view with real product photos and prices from your store, grab what you want, and send the list to your Kroger pickup cart.
 
-It's a personal side project, not a product: plain HTML/JS with no build step, plus a small Python server with no dependencies beyond the standard library.
+It's a personal side project, not a product: plain HTML/JS with no build step, served by a small Cloudflare Worker that proxies the Kroger API. Every player signs in with their own Kroger account.
 
-## Quick start
+> The **`local`** branch is the original single-user version: one Python file, no dependencies, one Kroger login stored on disk.
 
-1. You need Python 3.10+.
-2. Register an app at [developer.kroger.com](https://developer.kroger.com):
-   - Enable the **Products**, **Locations**, **Cart** and **Profile** APIs.
-   - Set the redirect URI to `http://localhost:8642/callback`.
+## Setup
+
+You need Node 22+ (`.nvmrc` says 24) and a free Cloudflare account.
+
+1. Register an app at [developer.kroger.com](https://developer.kroger.com):
+   - Enable **Products**, **Locations**, **Cart** and **Profile**.
+   - Add a redirect URI for every place the game runs: `http://localhost:8642/callback` for local dev, plus `https://kroger-walk.<your-subdomain>.workers.dev/callback` once it's deployed.
    - Kroger rejects app names that contain "Kroger".
-3. Copy `kroger_config.example.json` to `kroger_config.json` and fill in your client ID and secret.
-4. Run `python server.py` and open **http://localhost:8642**. Use `localhost`, not `127.0.0.1`, because the OAuth redirect and localStorage both depend on the origin.
-5. Pick your store when the game asks. To send items to your cart, press **K** and sign in.
+2. Run `npm install`.
+3. Copy `.dev.vars.example` to `.dev.vars` and fill it in. `SESSION_KEY` is any long random string.
+4. Run `npm run dev` and open **http://localhost:8642**.
 
-Without a `kroger_config.json` the game still runs. It uses the built-in sample catalog, and there are no live shelves or cart sync.
+## Deploy
+
+```sh
+npx wrangler login
+npx wrangler secret put KROGER_CLIENT_ID
+npx wrangler secret put KROGER_CLIENT_SECRET
+npx wrangler secret put SESSION_KEY      # a different random string than dev
+npm run deploy
+```
+
+**Lock it to your friends.** In the Cloudflare dashboard, go to *Workers & Pages → kroger-walk → Domains* (older dashboards: *Settings → Domains & Routes*) and enable **Cloudflare Access** on the workers.dev URL. Then add an Access policy that allows only your friends' email addresses (free for up to 50 users). Anyone not on the list never reaches the game, so they can't spend your Kroger API quota.
+
+## How it works
+
+| Path | What it does |
+|---|---|
+| `public/` | The game: `index.html` (page, HUD, modals), `store.js` (104×40 floor plan), `catalog.js` (sections and offline sample products), `game.js` (movement, search, cart, checkout, match & send), `shelf.js` (first-person shelves; live products are cached 12h in localStorage) |
+| `src/worker.js` | Kroger OAuth, store search, product search, photo proxy and cart add. Anything that isn't one of these routes is served from `public/` |
+| `wrangler.toml` | Worker config. The dev server runs on port 8642 so it matches the registered redirect URI |
+
+**Ordering:** at checkout, press **K** to match each list item to a product at your store and send everything to your Kroger cart (pickup). Kroger's API **can't place orders**, so you still choose a pickup time and pay in the Kroger app.
 
 ## Controls
 
@@ -24,25 +47,12 @@ Without a `kroger_config.json` the game still runs. It uses the built-in sample 
 | Store map | **WASD**/arrows move · **Shift** run · **E** look at a shelf · **/** find an item · **C** checkout · **K** Kroger · **V** toggle auto first-person · **?** help |
 | First person | **A/D** product · **W/S** shelf · **Enter** grab · **X** put back · **Tab** turn around · **/** find · **I** label pop-up · **L** list · **Esc** step out |
 
-Walking into an aisle switches to first person automatically. So does bumping into an outside wall (bakery/deli/meat/seafood, dairy, produce, service).
-
-## Ordering
-
-At checkout, press **K** to open *match & send*. Each list item is searched at your store, you confirm or cycle the match, and the items go to your Kroger cart via `PUT /cart/add` (pickup). Kroger's public API **can't place orders**, so you still choose a pickup time and pay in the Kroger app or on the site.
-
-## Files
-
-| File | What it does |
-|---|---|
-| `index.html` | Page, styles, HUD and modals |
-| `store.js` | Builds the 104×40 floor plan: sections, aisles, walls, corridors |
-| `catalog.js` | Sections and sample products used offline and for search |
-| `game.js` | Movement, NPCs, search with a path trail, cart, checkout, Kroger match & send |
-| `shelf.js` | First-person shelf view: live shelves per section (cached 12h in localStorage) and photo layout |
-| `server.py` | Serves static files and proxies the Kroger API: OAuth, locations, product search, image proxy, cart add |
+Walking into an aisle, or bumping into an outside wall (bakery/deli/meat/seafood, dairy, produce, service), switches to first person.
 
 ## Security notes
 
-- `kroger_config.json` (your client secret) and `kroger_tokens.json` (your login) are git-ignored. The server also refuses to serve any `kroger_*` file.
-- The secret never reaches the browser. All Kroger calls go through `server.py`.
-- The server stores **one** login. It's meant for one person on their own machine. Before hosting it for others, tokens need to be stored per user (for example, in encrypted cookies), and the OAuth flow needs a `state` check.
+- The Kroger client secret is a Worker secret and never reaches the browser.
+- Each player's Kroger tokens and store choice live in an AES-GCM-encrypted, `HttpOnly`, `SameSite=Lax` cookie. The server keeps no user data. Rotating `SESSION_KEY` signs everyone out.
+- OAuth uses a `state` cookie to block login CSRF.
+- Everyone shares one Kroger app's daily rate limits. The 12h shelf cache keeps usage low.
+- `.dev.vars` is git-ignored.

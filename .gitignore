@@ -1,4 +1,8 @@
-# Kroger client secret and login tokens — never commit
+# secrets — never commit
+.dev.vars
 kroger_config.json
 kroger_tokens.json
+
+node_modules/
+.wrangler/
 __pycache__/

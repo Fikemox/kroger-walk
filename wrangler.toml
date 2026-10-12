@@ -1,0 +1,10 @@
+name = "kroger-walk"
+main = "src/worker.js"
+compatibility_date = "2026-09-01"
+
+# the game itself; anything that isn't an asset (/api/*, /auth/*, /callback) goes to the Worker
+assets = { directory = "public", binding = "ASSETS" }
+
+[dev]
+# matches the http://localhost:8642/callback redirect URI registered on the Kroger app
+port = 8642
