@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kroger Walk</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
@@ -134,6 +134,86 @@
   #toast.on { opacity: 1; }
   #cart { transition: background .6s; }
   #cart.flash { background: #1c2c4a; transition: none; }
+
+  /* ---------- phones & tablets: only when the page has .m (touch-only device) ---------- */
+  #mini, #mBar, #mTabs, #sheetClose { display: none; }
+  .m, .m body { overscroll-behavior: none; }
+  .m body { height: 100dvh; grid-template-rows: auto minmax(0, 1fr) auto auto auto; grid-template-columns: minmax(0, 1fr); touch-action: manipulation;
+            padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); -webkit-tap-highlight-color: transparent; }
+  .m header { grid-row: 1; } .m main { grid-row: 2; } .m footer { grid-row: 3; } .m #mBar { grid-row: 4; } .m #mTabs { grid-row: 5; }
+  .m header { padding: 6px 10px; gap: 8px; align-items: center; min-width: 0; }
+  .m header .sub, .m header .keys { display: none; }
+  .m #krChip { flex: 1; min-width: 0; margin-left: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; font-size: 12px; padding: 4px 8px; }
+  .m main { min-width: 0; }
+  .m #mapwrap { padding: 8px; gap: 10px; }
+  .m #map, .m .fp-box { touch-action: none; }
+  .m #mini { display: block; position: absolute; top: 6px; right: 6px; width: 104px; height: 40px; border: 1px solid var(--line);
+             opacity: .85; image-rendering: pixelated; z-index: 2; }
+  .m.in-fp #mini { display: none; }
+  .m #modal { z-index: 3; }
+  .m .fp-box { flex: none; }
+  .m footer { grid-template-columns: minmax(0, 1fr); min-height: 0; padding: 4px 10px; font-size: 12px; gap: 0; }
+  .m #hud { display: none; }
+  .m #log div { display: none; }
+  .m #log div:last-child { display: block; }
+  .m #mTabs { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); background: var(--panel);
+              padding-bottom: env(safe-area-inset-bottom); position: relative; z-index: 6; }
+  .m #mTabs button { border: 0; background: none; padding: 12px 0; font-size: 14px; color: var(--text); }
+  .m #mTabs button:active { background: #1a2132; }
+  .m #mCartN:not(:empty) { color: #0b0d13; background: var(--green); padding: 0 5px; margin-left: 4px; border-radius: 8px; font-size: 12px; }
+  .m.in-fp #mBar { display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); min-width: 0; overflow: hidden; }
+  .m #mBar button { flex: none; min-width: 42px; padding: 10px 8px; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .m #mBar .add { flex: 1 0 auto; }
+  .m button:hover { border-color: var(--line); color: var(--text); }   /* touch has no hover; don't leave taps highlighted */
+  .m #mBar [data-k="Tab"] { flex: 0 1 auto; min-width: 0; max-width: 38vw; }
+  .m #mBar button[hidden] { display: none; }
+  .m #mBar .add { border-color: var(--green); color: #fff; }
+  /* cart + directory: a bottom sheet above the tab bar */
+  .m main > aside { position: fixed; left: 0; right: 0; bottom: calc(49px + env(safe-area-inset-bottom)); height: 72dvh; width: auto; z-index: 5;
+                    border: 0; border-top: 2px solid var(--yellow); transform: translateY(calc(100% + 80px)); visibility: hidden;
+                    transition: transform .2s, visibility .2s; box-shadow: 0 -10px 40px rgba(0,0,0,.6); }
+  .m.sheet main > aside { transform: none; visibility: visible; }
+  .m #sheetClose { display: block; align-self: center; width: 60px; height: 22px; border: 0; background: none; padding: 0; }
+  .m #sheetClose::before { content: ''; display: block; margin: 8px auto; width: 44px; height: 5px; border-radius: 3px; background: var(--line); }
+  .m .ci { padding: 4px 0; font-size: 14px; }
+  .m .ci button { padding: 4px 10px; font-size: 14px; }
+  .m .btns button { padding: 8px 12px; }
+  .m #dir div { padding: 6px 0; font-size: 14px; }
+  /* pop-ups fill the play area; keyboard hints are hidden */
+  .m .box { width: 100% !important; max-height: 100%; overflow-y: auto; }
+  .m .box .foot.keys { display: none; }
+  .m .box input, .m input { font-size: 16px; }
+  .m .row { padding: 8px 12px; }
+  .m .row .qty button, .m .row button[data-add] { padding: 4px 12px; font-size: 15px; }
+  .m .mtop { flex-wrap: wrap; }
+  .m .mtop button { padding: 4px 10px; font-size: 14px; }
+  .m .mbot { padding-left: 0; white-space: normal; }
+  .m .help { line-height: 1.5; font-size: 14px; }
+  .m pre.receipt { font-size: 11.5px; max-width: 100%; overflow-x: auto; }
+  .m #toast { bottom: calc(110px + env(safe-area-inset-bottom)); max-width: 90vw; text-align: center; }
+  /* first person: details beside the shelf in landscape, a strip under it in portrait */
+  .m #fpInfo { width: 34%; font-size: 13px; padding: 8px 10px; }
+  .m #fpInfo .fi-keys { display: none; }
+  /* short landscape phones: every row of height counts, so the header and ticker go
+     (the Kroger tab has the same info) and in first person the shelf bar replaces the tabs */
+  @media (orientation: landscape) and (max-height: 500px) {
+    .m header, .m footer { display: none; }
+    .m.in-fp #mTabs { display: none; }
+    .m #mapwrap { padding: 4px 8px; }
+    .m #fpInfo { width: 30%; }
+    .m #fpInfo .fi-img { max-height: 40%; aspect-ratio: auto; flex: none; height: 110px; }
+  }
+  @media (orientation: portrait) {
+    .m #mapwrap { flex-direction: column; }
+    .m #fpInfo { width: 100%; height: 104px; flex: none; align-self: stretch; flex-direction: row; align-items: stretch; gap: 10px; }
+    .m #fpInfo .fi-sec { display: none; }
+    .m #fpInfo .fi-img { width: 84px; height: 84px; flex: none; aspect-ratio: auto; }
+    .m #fpInfo .fi-body { flex: 1; min-width: 0; overflow: hidden; }
+    .m #fpInfo .fi-body { gap: 2px; justify-content: center; }
+    .m #fpInfo .fi-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; }
+    .m #fpInfo .fi-body > .fi-dim { display: none; }
+    .m #fpInfo .fi-price { font-size: 15px; }
+  }
 </style>
 </head>
 <body>
@@ -143,8 +223,9 @@
   <span class="keys"><b>WASD</b>/arrows move · <b>Shift</b> run · <b>E</b> look · <b>/</b> find · <b>C</b> checkout · <b>K</b> kroger · <b>V</b> auto-aisle · <b>?</b> help</span>
 </header>
 <main>
-  <section id="mapwrap"><pre id="map"></pre><div class="fp-box"><pre id="fp" hidden></pre></div><aside id="fpInfo" hidden></aside><div id="modal" hidden></div></section>
+  <section id="mapwrap"><canvas id="mini" width="208" height="80"></canvas><pre id="map"></pre><div class="fp-box"><pre id="fp" hidden></pre></div><aside id="fpInfo" hidden></aside><div id="modal" hidden></div></section>
   <aside>
+    <button id="sheetClose" aria-label="Close cart"></button>
     <div class="panel" id="cart">
       <h2>CART <span id="cartCount" style="color:var(--dim)"></span></h2>
       <div id="cartList"></div>
@@ -163,6 +244,8 @@
   </aside>
 </main>
 <footer><div id="hud"></div><div id="log"></div></footer>
+<div id="mBar"><button data-k="Escape" aria-label="Back to the map">✕</button><button data-k="x" aria-label="Put one back">－</button><button data-k="Enter" class="add">＋ Add</button><button data-k="Tab">↻ Turn</button><button data-k="/" aria-label="Find">🔍</button><button data-k="l" aria-label="List and write-ins">☰</button></div>
+<nav id="mTabs"><button data-tab="map">Map</button><button data-tab="find">Find</button><button data-tab="cart">Cart<span id="mCartN"></span></button><button data-tab="kroger">Kroger</button></nav>
 <div id="toast"></div>
 <script src="catalog.js"></script>
 <script src="store.js"></script>

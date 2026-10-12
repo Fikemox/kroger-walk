@@ -22,6 +22,12 @@ CATALOG.forEach(s => s.items.forEach(it => {
 }));
 
 const $ = id => document.getElementById(id);
+// Touch-only devices (phones, tablets without a mouse or trackpad) get the mobile layout:
+// tap-to-walk, a camera that follows you, a tab bar. Anything with a mouse gets the desktop
+// game exactly as before. ?mobile / ?desktop force one or the other.
+const QS = new URLSearchParams(location.search);
+const M = QS.has('mobile') || (!QS.has('desktop') && matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches);
+if (M) document.documentElement.classList.add('m');
 const money = n => '$' + n.toFixed(2);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const persist = {
@@ -158,6 +164,7 @@ function navigate(sec, idx = null) {
   if (here) addLog(`${title(SEC[sec])} is right here — press E.`);
   else addLog(`Follow the pink trail to ${title(SEC[sec])} (${path.length} steps).`);
   updateHud();
+  if (M) { if (here) interact(); else autoWalk(); }
 }
 
 function step(dx, dy) {
@@ -190,6 +197,8 @@ let autoFP = persist.get('kw-autofp', true);
 function openFP(opts) {
   held.clear();
   if (kr.configured && !kr.locationId) { addLog('Pick your Kroger store first. Shelves stock from it.'); return openKroger(); }
+  // phones: show the shelf buttons first so the shelf is sized for the space that's left
+  if (M) { stopWalk(); closeSheet(); document.documentElement.classList.add('in-fp'); }
   mode = 'fp'; fp.enter(opts); updateHud();
 }
 function focusKeyFor(secs) {
@@ -211,6 +220,7 @@ function enterWall(wall, cell) {
 let pendingNav = null;
 function onExitFP({ bayFrac, sec, kind }) {
   mode = 'walk';
+  if (M) { document.documentElement.classList.remove('in-fp'); fit(); }
   const cor = S.corridorAt(player.x, player.y);
   if (kind === 'wall') {
     // step out in front of the stretch of wall you were looking at
@@ -262,10 +272,11 @@ function render() {
   const npcAt = new Map(npcs.map(n => [n.y * W + n.x, n]));
   const active = mode === 'walk' ? interactSection() : (br && br.id);
   const pIdx = player.y * W + player.x;
+  const cam = M ? camera() : { x0: 0, y0: 0, w: W, h: H };
   let html = '', run = '', style = null;
   const flush = () => { if (run) html += style ? `<span style="${style}">${run}</span>` : run; run = ''; };
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
+  for (let y = cam.y0; y < cam.y0 + cam.h; y++) {
+    for (let x = cam.x0; x < cam.x0 + cam.w; x++) {
       const i = y * W + x, c = grid[i];
       let ch = c.ch, st = `color:${c.color}`;
       if (c.sec && c.sec === active) st += ';background:#2a3858;font-weight:bold';
@@ -285,10 +296,12 @@ function render() {
     html += '\n';
   }
   mapEl.innerHTML = html;
+  if (M) drawMini(cam);
 }
 setInterval(() => { blink = !blink; if (target) dirty = true; }, 450);
 
 function fit() {
+  if (M) return fitMobile();
   const wrap = $('mapwrap');
   const probe = document.createElement('span');
   probe.style.cssText = 'position:absolute;visibility:hidden;font-size:100px;white-space:pre;font-family:' + getComputedStyle(mapEl).fontFamily;
@@ -338,6 +351,7 @@ function renderCart() {
       <a href="${krogerUrl(e.name)}" target="_blank" title="Find on kroger.com">↗</a></div>`).join('')).join('')
     : `<div class="empty">  _______\n |       |   your cart is empty.\n |_______|   go walk around!\n  o     o</div>`;
   $('cartTotals').innerHTML = `<span>${t.n} item${t.n === 1 ? '' : 's'}</span><span>est. <b>${money(t.sum)}</b>${t.unpriced ? `<span class="dim" title="Kroger has no online price for ${t.unpriced === 1 ? 'one item' : `${t.unpriced} items`} at your store"> +${t.unpriced}?</span>` : ''}</span>`;
+  if (M) updateTabs();
   $('cart').classList.add('flash'); clearTimeout(renderCart.t); renderCart.t = setTimeout(() => $('cart').classList.remove('flash'), 120);
 }
 $('cartList').addEventListener('click', e => {
@@ -392,6 +406,7 @@ document.addEventListener('click', () => setTimeout(() => {
   for (const s of CATALOG) if (!s.aisle) rows.push([`<span class="num">·</span>${esc(s.name)} <span style="color:var(--dim)">${esc(s.dept)}</span>`, s.id]);
   $('dir').innerHTML = rows.map(([h, id]) => `<div data-sec="${id}">${h}</div>`).join('');
   $('dir').addEventListener('click', e => { const d = e.target.closest('[data-sec]'); if (d) navigate(d.dataset.sec); });
+  if (M) document.querySelector('#dirPanel summary').textContent = 'STORE DIRECTORY (tap to walk there)';
 })();
 
 // ---------- modal plumbing ----------
@@ -438,7 +453,7 @@ function openBrowse(id) {
     <div class="art">${esc(artFor(s))}</div>
     <div class="rows" id="brRows"></div>
     <div class="pad" id="brWrite" hidden><input id="brInput" placeholder="e.g. Fairlife chocolate milk — Enter to add, Esc to cancel" maxlength="80"></div>
-    <div class="foot"><b>W/S</b> ↑↓ select · <b>D</b>/<b>Enter</b> add · <b>A</b> put back · <b>N</b> write-in · <b>Esc</b> walk away</div>`, s.color);
+    <div class="foot keys"><b>W/S</b> ↑↓ select · <b>D</b>/<b>Enter</b> add · <b>A</b> put back · <b>N</b> write-in · <b>Esc</b> walk away</div>`, s.color);
   renderBrowse();
   $('brRows').addEventListener('click', e => {
     const row = e.target.closest('.row'); if (!row) return;
@@ -520,7 +535,7 @@ function openSearch() {
     <div class="ttl"><span>╡ Where is it? ╞</span><span style="color:var(--dim)">${INDEX.length - CATALOG.length} products</span></div>
     <div class="pad"><input id="sInput" placeholder="milk, salsa, paper towels, aisle stuff…" autocomplete="off"></div>
     <div class="rows" id="sRows"><div class="pad" style="color:var(--dim)">Type to search. Enter = walk me there. Shift+Enter = just add it.</div></div>
-    <div class="foot"><b>↑↓</b> select · <b>Enter</b> get directions · <b>Shift+Enter</b> add to cart · <b>Esc</b> close</div>`, '#ff5cf0');
+    <div class="foot keys"><b>↑↓</b> select · <b>Enter</b> get directions · <b>Shift+Enter</b> add to cart · <b>Esc</b> close</div>`, '#ff5cf0');
   const input = $('sInput');
   input.focus();
   input.addEventListener('input', () => { sr.results = search(input.value); sr.idx = 0; renderSearch(); });
@@ -532,7 +547,7 @@ function openSearch() {
     if (e.key === 'Enter') pickResult(sr.results[sr.idx], e.shiftKey);
   });
   $('sRows').addEventListener('click', e => {
-    const row = e.target.closest('.row'); if (row) pickResult(sr.results[+row.dataset.i], e.shiftKey);
+    const row = e.target.closest('.row'); if (row) pickResult(sr.results[+row.dataset.i], e.shiftKey || !!e.target.closest('[data-add]'));
   });
 }
 function renderSearch() {
@@ -542,7 +557,7 @@ function renderSearch() {
     const s = SEC[r.sec];
     return `<div class="row res ${i === sr.idx ? 'sel' : ''}" data-i="${i}"><span class="cur">${i === sr.idx ? '▶' : ''}</span>
       <span class="nm" style="${r.section ? `color:${s.color}` : ''}">${r.section ? '➜ ' : ''}${esc(r.name)}</span><span class="dots"></span>
-      <span class="sec">${r.section ? 'go to section' : esc(title(s))}</span>${r.it && qty(r.it.key) ? `<b style="color:var(--green);font-weight:normal">×${qty(r.it.key)}</b>` : ''}</div>`;
+      <span class="sec">${r.section ? 'go to section' : esc(title(s))}</span>${r.it && qty(r.it.key) ? `<b style="color:var(--green);font-weight:normal">×${qty(r.it.key)}</b>` : ''}${M && r.it ? '<button data-add="1">+</button>' : ''}</div>`;
   }).join('');
   const sel = el.querySelector('.sel'); if (sel) sel.scrollIntoView({ block: 'nearest' });
 }
@@ -584,6 +599,22 @@ function openCheckout() {
 // ---------- help ----------
 function openHelp() {
   mode = 'help';
+  if (M) {
+    openModal(`
+    <div class="ttl"><span>╡ Welcome to Kroger Walk ╞</span></div>
+    <div class="help">
+      You are <b style="background:var(--blue);color:#fff">@</b>. Walk the store, browse shelves, and fill your cart like it's a real trip,
+      minus the parking lot.<br><br>
+      <b>Tap</b> anywhere on the map to walk there. <b>Tap a shelf</b>, counter or bin to walk up and look closer.<br>
+      Walking into an aisle switches to first person: <b>tap</b> a product to see it, <b>tap again</b> (or <b>＋ Add</b>) to grab it,
+      <b>swipe</b> left/right for more of the aisle, <b>↻</b> turns around.<br>
+      <b>Find</b> searches the store and walks you there · <b>Cart</b> shows your list · <b>Kroger</b> picks your store and signs in.<br><br>
+      <span style="color:var(--dim)">&amp; = other shoppers · <span style="color:#4da3ff">K</span> = a helpful associate · your cart saves automatically.</span>
+    </div>
+    <div class="pad btns"><button id="hlpGo" style="border-color:var(--blue);color:#fff">Start shopping</button></div>`);
+    $('hlpGo').onclick = closeModal;
+    return;
+  }
   openModal(`
     <div class="ttl"><span>╡ Welcome to Kroger Walk ╞</span></div>
     <div class="help">
@@ -598,7 +629,7 @@ function openHelp() {
       In first person: <b>/</b> find, <b>A/D</b> products, <b>W/S</b> shelves, <b>Enter</b> grab, <b>X</b> put back, <b>Tab</b> turn around, <b>L</b> list &amp; write-ins, <b>Esc</b> step out.<br>
       <span style="color:var(--dim)">&amp; = other shoppers · <span style="color:#4da3ff">K</span> = a helpful associate · your cart saves automatically.</span>
     </div>
-    <div class="foot">Press <b>Esc</b> or <b>Enter</b> to start shopping.</div>`);
+    <div class="foot keys">Press <b>Esc</b> or <b>Enter</b> to start shopping.</div>`);
 }
 
 // ---------- input ----------
@@ -746,10 +777,7 @@ function openKroger() {
   if ($('krOut')) $('krOut').onclick = async () => { await api('/auth/logout', {}); await refreshKroger(); openKroger(); };
   const zip = $('zipIn');
   zip.focus();
-  zip.addEventListener('keydown', async e => {
-    e.stopPropagation();
-    if (e.key === 'Escape') return closeModal();
-    if (e.key !== 'Enter') return;
+  const lookup = async () => {
     $('locRows').innerHTML = '<div class="pad" style="color:var(--dim)">looking up stores…</div>';
     try {
       const { locations } = await api('/api/locations?zip=' + encodeURIComponent(zip.value.trim()));
@@ -765,7 +793,17 @@ function openKroger() {
         openKroger();
       };
     } catch (err) { $('locRows').innerHTML = `<div class="pad" style="color:var(--red)">${esc(err.message)} ${esc(err.detail || '')}</div>`; }
+  };
+  zip.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Escape') return closeModal();
+    if (e.key === 'Enter') lookup();
   });
+  // phones: the iPhone number pad has no Enter key, so look up as soon as there's a full ZIP
+  if (M) {
+    zip.placeholder = 'ZIP code';
+    zip.addEventListener('input', () => { if (/^\d{5}$/.test(zip.value.trim())) lookup(); });
+  }
 }
 
 // match each list line to a real product, then PUT them into the Kroger cart
@@ -788,7 +826,7 @@ async function openMatch() {
   openModal(`<div class="ttl"><span>╡ Send to Kroger · ${esc(kr.locationName)} ╞</span><span id="mtSum" style="color:var(--dim)"></span></div>
     <div class="rows" id="mtRows"></div>
     <div class="pad btns" id="mtBtns"></div>
-    <div class="foot"><b>W/S</b> row · <b>A/D</b> try another product · <b>X</b> skip/include · <b>Enter</b> add to Kroger cart · <b>Esc</b> back to the store</div>`, '#2f7df6', 820);
+    <div class="foot keys"><b>W/S</b> row · <b>A/D</b> try another product · <b>X</b> skip/include · <b>Enter</b> add to Kroger cart · <b>Esc</b> back to the store</div>`, '#2f7df6', 820);
   $('mtRows').addEventListener('click', e => {
     const row = e.target.closest('.mrow'); if (!row) return;
     mt.idx = +row.dataset.i;
@@ -915,6 +953,168 @@ async function sendMatch() {
   }
 }
 
+// ---------- phones & tablets (touch only; desktop never runs any of this) ----------
+let cam = { x0: 0, y0: 0, w: W, h: H };
+let camSize = { cols: W, rows: H };
+const charW = () => {
+  const probe = document.createElement('span');
+  probe.style.cssText = 'position:absolute;visibility:hidden;font-size:100px;white-space:pre;font-family:' + getComputedStyle(mapEl).fontFamily;
+  probe.textContent = 'M'.repeat(50);
+  document.body.appendChild(probe);
+  const cw = probe.getBoundingClientRect().width / 5000;
+  probe.remove();
+  return cw;
+};
+// the map is too big to read on a phone, so show a window around you that follows you
+function camera() {
+  const { cols, rows } = camSize;
+  const w = Math.min(W, cols), h = Math.min(H, rows);
+  const x0 = Math.max(0, Math.min(W - w, player.x - Math.floor(w / 2)));
+  const y0 = Math.max(0, Math.min(H - h, player.y - Math.floor(h / 2)));
+  return (cam = { x0, y0, w, h });
+}
+function fitMobile() {
+  const wrap = $('mapwrap'), cw = charW();
+  const aw = wrap.clientWidth - 16, ah = wrap.clientHeight - 16;
+  // map: big enough to read (~44 columns across a phone in portrait), then as many cells as fit
+  const fs = Math.max(11, Math.min(16, Math.floor(aw / (44 * cw)), Math.floor(ah / (14 * 1.12))));
+  mapEl.style.fontSize = fs + 'px';
+  camSize = { cols: Math.floor(aw / (fs * cw)), rows: Math.floor(ah / (fs * 1.12)) };
+  // first person: the most products per bay that still reads at >= 11.5px, details beside or below
+  const info = $('fpInfo'), portrait = wrap.clientHeight > wrap.clientWidth;
+  const fw = aw - (info.hidden || portrait ? 0 : info.offsetWidth + 10), fh = ah - (info.hidden || !portrait ? 0 : info.offsetHeight + 10);
+  let best = null;
+  for (let shelves = 4; shelves >= 2; shelves--) for (let slots = 7; slots >= 2; slots--) {
+    const gw = 6 + slots * 13 + 6, gh = 3 + shelves * 8 + 1;
+    const f = Math.min(fw / (gw * cw), fh / (gh * 1.12));
+    const score = f >= 11.5 ? slots * shelves * 100 + f : f;
+    if (!best || score > best.score) best = { slots, shelves, f, score };
+  }
+  fp.setGeometry(best.slots, best.shelves);
+  $('fp').style.fontSize = Math.max(6, Math.floor(best.f * 10) / 10) + 'px';
+  dirty = true;
+  if (fp.active) fp.draw();
+}
+
+// mini-map: the whole store, with the visible window and you on it
+const miniEl = $('mini');
+let miniBase = null;
+function drawMini(c) {
+  const g = miniEl.getContext('2d'), sx = miniEl.width / W, sy = miniEl.height / H;
+  if (!miniBase) {
+    miniBase = document.createElement('canvas');
+    miniBase.width = miniEl.width; miniBase.height = miniEl.height;
+    const b = miniBase.getContext('2d');
+    b.fillStyle = '#0b0d13'; b.fillRect(0, 0, miniBase.width, miniBase.height);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const cell = grid[y * W + x];
+      if (cell.walk && !cell.sec) continue;
+      b.fillStyle = cell.sec ? (SEC[cell.sec] ? SEC[cell.sec].color : '#ffd84a') : '#3a4560';
+      b.fillRect(x * sx, y * sy, sx, sy);
+    }
+  }
+  g.drawImage(miniBase, 0, 0);
+  g.fillStyle = '#ff5cf0';
+  for (const i of path) g.fillRect((i % W) * sx, Math.floor(i / W) * sy, sx, sy);
+  g.strokeStyle = 'rgba(255,255,255,.7)'; g.lineWidth = 1;
+  g.strokeRect(c.x0 * sx + 0.5, c.y0 * sy + 0.5, c.w * sx - 1, c.h * sy - 1);
+  g.fillStyle = '#fff'; g.fillRect(player.x * sx - 1, player.y * sy - 1, sx + 2, sy + 2);
+}
+
+// tap-to-walk: follow the path one step at a time through the normal step(), so aisles,
+// walls and directions behave exactly like walking with the keyboard
+let walker = null;
+function stopWalk() { clearInterval(walker); walker = null; }
+function autoWalk() {
+  stopWalk();
+  walker = setInterval(() => {
+    if (mode !== 'walk') return stopWalk();
+    if (!path.length) {
+      stopWalk();
+      if (target && computePath()) interact();   // arrived at a shelf or counter: look at it
+      return;
+    }
+    const next = path[path.length - 1], nx = next % W, ny = Math.floor(next / W);
+    if (Math.abs(nx - player.x) + Math.abs(ny - player.y) !== 1) return stopWalk();
+    if (!target) path.pop();
+    step(nx - player.x, ny - player.y);
+  }, 65);
+}
+function walkToCell(goal) {
+  target = null; targetItem = null; path = [];
+  const start = player.y * W + player.x;
+  if (goal !== start) {
+    const prev = new Int32Array(W * H).fill(-1);
+    prev[start] = start;
+    const q = [start];
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h];
+      if (i === goal) { for (let j = i; j !== start; j = prev[j]) path.push(j); break; }
+      for (const d of [1, -1, W, -W]) { const n = i + d; if (prev[n] === -1 && grid[n].walk) { prev[n] = i; q.push(n); } }
+    }
+  }
+  dirty = true; updateHud();
+  if (path.length) autoWalk();
+}
+function tapCell(x, y) {
+  if (x < 0 || y < 0 || x >= W || y >= H || mode !== 'walk') return;
+  const c = grid[y * W + x];
+  if (c.sec) return navigate(c.sec);
+  if (c.walk) walkToCell(y * W + x);
+}
+
+// cart lives in a bottom sheet; the tab shows how many items
+function closeSheet() { document.documentElement.classList.remove('sheet'); }
+function updateTabs() { const n = totals().n; $('mCartN').textContent = n ? String(n) : ''; }
+function updateMBar() {
+  const other = fp.otherSide, turn = $('mBar').querySelector('[data-k="Tab"]');
+  turn.hidden = !other;
+  if (other) turn.textContent = '↻ ' + other;
+}
+function setupMobile() {
+  mapEl.addEventListener('click', e => {
+    const r = mapEl.getBoundingClientRect();
+    tapCell(cam.x0 + Math.floor((e.clientX - r.left) / (r.width / cam.w)), cam.y0 + Math.floor((e.clientY - r.top) / (r.height / cam.h)));
+  });
+  miniEl.addEventListener('click', e => {
+    const r = miniEl.getBoundingClientRect();
+    tapCell(Math.floor((e.clientX - r.left) / (r.width / W)), Math.floor((e.clientY - r.top) / (r.height / H)));
+  });
+  // first person: a tap selects, a second tap grabs; a sideways swipe moves a bay
+  const box = document.querySelector('.fp-box');
+  let down = null;
+  box.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; });
+  box.addEventListener('pointerup', e => {
+    if (!down || !fp.active) return;
+    const dx = e.clientX - down.x, dy = e.clientY - down.y;
+    down = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) return fp.jumpBay(dx < 0 ? 1 : -1);
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) return;
+    const r = $('fp').getBoundingClientRect(), { W: fw, H: fh } = fp.size;
+    fp.tap(Math.floor((e.clientX - r.left) / (r.width / fw)), Math.floor((e.clientY - r.top) / (r.height / fh)));
+  });
+  // shelf buttons send the same keys the keyboard would
+  $('mBar').addEventListener('click', e => {
+    const b = e.target.closest('button[data-k]');
+    if (b && fp.active && mode === 'fp') fp.key({ preventDefault() {} }, b.dataset.k);
+  });
+  $('mTabs').addEventListener('click', e => {
+    const b = e.target.closest('button[data-tab]'); if (!b) return;
+    const tab = b.dataset.tab, sheetOpen = document.documentElement.classList.contains('sheet');
+    closeSheet();
+    if (!modal.hidden) closeModal();
+    if (tab === 'map') { stopWalk(); if (fp.active) fp.exit(); }
+    if (tab === 'find') openSearch();
+    if (tab === 'kroger') openKroger();
+    if (tab === 'cart' && !sheetOpen) document.documentElement.classList.add('sheet');
+  });
+  $('sheetClose').onclick = closeSheet;
+  $('dir').addEventListener('click', closeSheet);
+  $('btnCheckout').addEventListener('click', closeSheet);
+  window.addEventListener('orientationchange', () => setTimeout(fit, 250));
+  updateTabs();
+}
+
 // ---------- go ----------
 const fp = createFirstPerson({
   W, H, SEC, title, mapEl, fpEl: $('fp'), infoEl: $('fpInfo'), fit, persist, memo, qty, addItem, api,
@@ -924,7 +1124,9 @@ const fp = createFirstPerson({
   openList: id => openBrowse(id),
   openSearch: () => openSearch(),
   onExit: onExitFP,
+  onDraw: M ? updateMBar : null,
 });
+if (M) setupMobile();
 fit();
 renderCart();
 updateHud();
@@ -940,5 +1142,5 @@ refreshKroger().then(() => {
   if (kr.configured && !kr.locationId && mode === 'walk') { addLog('Welcome! Pick your Kroger store to stock the shelves.'); openKroger(); }
 });
 requestAnimationFrame(loop);
-window.kw = { player, step, navigate, interact, openMatch, openCheckout, refreshKroger, kr, get path() { return path; } }; // console poking
+window.kw = { player, step, navigate, interact, openMatch, openCheckout, refreshKroger, kr, M, get path() { return path; }, get cam() { return cam; }, get mode() { return mode; } }; // console poking
 })();

@@ -3,8 +3,11 @@
 // (photos turned into ASCII art), otherwise from the game catalog with drawn packages.
 function createFirstPerson(ctx) {
   'use strict';
-  const { W, H } = ctx;
-  const SLOT_W = 12, SLOT_STEP = 13, SLOTS = 7, SHELVES = 4, SHELF_H = 8, TOP = 3, LEFT = 6, ART_H = 6;
+  // the shelf grid is W x H characters with SHELVES x SLOTS products per bay. Desktop always uses
+  // the map's 104x40 and 7x4; touch phones call setGeometry() for a smaller, bigger-print shelf.
+  let { W, H } = ctx;
+  let SLOTS = 7, SHELVES = 4, compact = false;
+  const SLOT_W = 12, SLOT_STEP = 13, SHELF_H = 8, TOP = 3, LEFT = 6, ART_H = 6;
   const el = ctx.fpEl;
   const DIM = '#6b7690', TEXT = '#e6ecff', EDGE = '#56627e', HILITE = '#24324f';
   let st = null;
@@ -348,16 +351,17 @@ function createFirstPerson(ctx) {
     const sd = side(), seg = curSeg(), gi = sd.segs.indexOf(seg);
     const sec = ctx.SEC[seg.sec];
     // header
-    text(g, 1, 0, ` ${ctx.title(sec).toUpperCase()} `, '#0b0d13', sec.color);
+    const within = st.bay - sd.start[gi];
+    const bayTxt = `${st.bay > 0 ? '<' : ' '} bay ${within + 1}/${seg.bays.length} ${st.bay < sd.bays.length - 1 ? '>' : ' '}`;
+    const head = ` ${ctx.title(sec).toUpperCase()} `;
+    text(g, 1, 0, compact ? head.slice(0, W - bayTxt.length - 4) : head, '#0b0d13', sec.color);
     const nb = (i, arrow) => (sd.segs[i] ? `${arrow} ${ctx.SEC[sd.segs[i].sec].name}` : '');
     const sideTxt = st.sides.length > 1 ? `${st.side === 0 ? 'LEFT' : 'RIGHT'} SIDE  [Tab] turn to ${ctx.SEC[st.sides[1 - st.side].segs[0].sec].name}`
       : [st.label, nb(gi - 1, '<'), nb(gi + 1, '>')].filter(Boolean).join('   ');
-    text(g, 3 + ctx.title(sec).length + 2, 0, sideTxt, DIM);
-    const within = st.bay - sd.start[gi];
-    const bayTxt = `${st.bay > 0 ? '<' : ' '} bay ${within + 1}/${seg.bays.length} ${st.bay < sd.bays.length - 1 ? '>' : ' '}`;
+    if (!compact) text(g, 3 + ctx.title(sec).length + 2, 0, sideTxt, DIM);
     text(g, W - bayTxt.length - 2, 0, bayTxt, '#ffd84a');
     const status = seg.loading ? 'stocking shelves from your Kroger store...'
-      : seg.live ? `live: ${ctx.kr.locationName} (${seg.products.length} products)`
+      : seg.live ? (compact ? `live · ${seg.products.length} products${st.sides.length > 1 ? ` · ${st.side === 0 ? 'left' : 'right'} side` : ''}` : `live: ${ctx.kr.locationName} (${seg.products.length} products)`)
       : ctx.kr.quota && !ctx.kr.quota.products.left ? 'game catalog (Kroger searches used up for today)'
         : ctx.kr.configured && ctx.kr.locationId ? 'game catalog (store had no matches)' : 'game catalog. Connect Kroger (K) to see your store\'s real shelves';
     text(g, 2, 1, status, seg.live ? '#8be36f' : DIM);
@@ -392,8 +396,8 @@ function createFirstPerson(ctx) {
       if (!r.length) text(g, LEFT, y0 + 2, '(empty shelf)', '#3a4258');
     });
     fillRect(g, 3, TOP + SHELVES * SHELF_H, W - 6, 1, '.', '#2a3042');
-    text(g, 2, H - 3, 'A/D product  W/S shelf  Enter grab  X put back  Tab turn  / find  I details  L list  Esc step out', DIM);
-    if (sd.bays.length > 1) text(g, 2, H - 2, `More bays this way: ${st.bay > 0 ? '‹ ' : ''}${st.bay < sd.bays.length - 1 ? '›' : ''}`, '#3f4a66');
+    if (!compact) text(g, 2, H - 3, 'A/D product  W/S shelf  Enter grab  X put back  Tab turn  / find  I details  L list  Esc step out', DIM);
+    if (!compact && sd.bays.length > 1) text(g, 2, H - 2, `More bays this way: ${st.bay > 0 ? '‹ ' : ''}${st.bay < sd.bays.length - 1 ? '›' : ''}`, '#3f4a66');
     return g;
   }
 
@@ -497,7 +501,7 @@ function createFirstPerson(ctx) {
     const g = shelfGrid();
     play('slide', 160, t => { const sh = Math.round(d * (1 - ease(t)) * W * 0.6); shiftPhotos(sh); return toHtml(g, sh); }, () => { shiftPhotos(0); draw(); });
   }
-  function draw() { if (st && !st.anim) { el.innerHTML = toHtml(shelfGrid()); placePhotos(); renderInfo(); } }
+  function draw() { if (st && !st.anim) { el.innerHTML = toHtml(shelfGrid()); placePhotos(); renderInfo(); if (ctx.onDraw) ctx.onDraw(); } }
 
   // ---------- public ----------
   // sides: [[secId, ...], ...]  one list per side you can face (Tab turns between them)
@@ -591,8 +595,49 @@ function createFirstPerson(ctx) {
     if (act) { e.preventDefault(); act(); }
   }
 
+  // ---------- touch (phones) ----------
+  // a tap on the shelf grid at character (x, y): first tap selects a product, a second tap grabs it
+  function tap(x, y) {
+    if (!st || st.anim) return null;
+    const s = Math.floor((y - TOP) / SHELF_H), i = Math.floor((x - LEFT) / SLOT_STEP);
+    const r = bayOf()[s] || [];
+    if (s < 0 || s >= SHELVES || i < 0 || i >= r.length) return null;
+    const p = r[i];
+    if (p === current() && s === st.shelf) { ctx.addItem(p.item, 1); draw(); return 'add'; }
+    st.shelf = s; st.slot = i; snap(); draw();
+    return 'select';
+  }
+  // swipe: straight to the next or previous bay
+  function jumpBay(d) {
+    if (!st || st.anim) return;
+    const nb = st.bay + d;
+    if (nb < 0 || nb >= side().bays.length) return;
+    st.bay = nb;
+    if (!row().length) st.shelf = bayOf().reduce((m, rr, i) => (rr.length ? i : m), 0);
+    st.slot = 0; snap(); slide(d);
+  }
+  // phones: restock the same products onto a smaller shelf, keeping the selected product selected
+  function setGeometry(slots, shelves) {
+    if (slots === SLOTS && shelves === SHELVES && compact) return false;
+    const keep = st && current() ? current().key : null;
+    SLOTS = slots; SHELVES = shelves; compact = true;
+    W = LEFT + SLOTS * SLOT_STEP + 6; H = TOP + SHELVES * SHELF_H + 1;
+    if (!st) return true;
+    st.sides.forEach(sd => { sd.segs.forEach(seg => stockSeg(seg, seg.products)); flatten(sd); });
+    st.bay = Math.min(st.bay, side().bays.length - 1); st.shelf = Math.min(st.shelf, SHELVES - 1);
+    if (keep) st.sides.forEach((sd, si) => sd.bays.forEach((bay, b) => bay.forEach((r, sh) => {
+      const i = r.findIndex(p => p.key === keep);
+      if (i >= 0 && si === st.side) { st.bay = b; st.shelf = sh; st.slot = i; }
+    })));
+    snap(); if (!st.anim) draw();
+    return true;
+  }
+
   return {
     get active() { return !!st; },
+    get size() { return { W, H }; },
+    get otherSide() { return st && st.sides.length > 1 ? ctx.SEC[st.sides[1 - st.side].segs[0].sec].name : null; },
+    tap, jumpBay, setGeometry,
     enter, exit, key, draw, goto,
     has: sec => !!st && st.sides.some(sd => sd.segs.some(seg => seg.sec === sec)),
     refresh: () => {

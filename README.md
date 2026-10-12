@@ -58,6 +58,14 @@ npm run deploy
 
 Walking into an aisle, or bumping into an outside wall (bakery/deli/meat/seafood, dairy, produce, service), switches to first person.
 
+**Phones and tablets:** touch-only devices (no mouse or trackpad) get a touch layout automatically, on the same URL:
+- **Moving:** tap to walk anywhere, and tap a shelf or counter to walk up and look at it. The map camera follows you, with a mini-map in the corner.
+- **Shelves:** tap a product to select it and tap again to grab it. Swipe left or right for the next bay; the buttons handle －/＋, turning around, Find and the list.
+- **Tabs:** a bottom tab bar has Map, Find, Cart and Kroger, and the cart opens as a sheet.
+- **Fit:** the shelf picks how many products per bay fit the screen.
+
+Anything with a mouse gets the desktop game unchanged. Add `?mobile` or `?desktop` to the URL to force either layout.
+
 ## Security notes
 
 - The Kroger client secret is a Worker secret and never reaches the browser.
