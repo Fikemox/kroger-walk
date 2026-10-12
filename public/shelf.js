@@ -63,8 +63,45 @@ function createFirstPerson(ctx) {
   // Kroger counts requests, not products, so every term asks for its max page of 50
   const PER_TERM = 50;
 
-  // the old 48-product shelf caches are superseded; free their space
-  try { Object.keys(localStorage).filter(k => k.startsWith('kw-shelf:')).forEach(k => localStorage.removeItem(k)); } catch { /* storage blocked */ }
+  // Kroger's search is fuzzy ("sugar" finds Monster Zero Sugar), but it also says which aisle
+  // each product sits in at your store. Keep products from the aisles where that search term,
+  // and the section as a whole, mostly lives; drop the strays from other aisles.
+  const SHARE_OF_TERM = 0.2, SHARE_OF_SECTION = 0.1, MIN_AISLE = 3;
+  const DISPLAYS = new Set(['seasonal', 'floral', 'service']);            // spread across the store on purpose
+  const VAGUE = new Set(['', 'GROCERY', 'VIRTUAL PLANOGRAM', 'ROLLING FIXTURES']);   // no real location: keep
+  const CROSS_CATS = new Set(['Natural & Organic', 'International']);
+  // Kroger numbers produce tables, deli and bakery counters separately; treat each as one area
+  const area = a => /^AISLE \d+/.test(a) ? a : /PRODUCE|VEGETABLE|FRUIT|VALUE ADDED/.test(a) ? 'PRODUCE'
+    : /DELI|PACKAGED MEAT/.test(a) ? 'DELI' : /BAKERY/.test(a) ? 'BAKERY' : a.replace(/[\s\d-]+$/, '');
+  function mainAisles(products, share) {
+    const count = {};
+    for (const p of products) { const a = (p.aisle || '').toUpperCase(); if (!VAGUE.has(a)) count[area(a)] = (count[area(a)] || 0) + 1; }
+    const top = Math.max(0, ...Object.values(count));
+    return new Set(Object.keys(count).filter(a => count[a] >= Math.max(MIN_AISLE, top * share)));
+  }
+  function inItsAisle(lists, secId) {
+    if (DISPLAYS.has(secId)) return lists;
+    const section = mainAisles(lists.flat(), SHARE_OF_SECTION);
+    const kept = lists.map(list => {
+      const term = mainAisles(list, SHARE_OF_TERM);
+      return list.filter(p => {
+        const a = (p.aisle || '').toUpperCase();
+        return VAGUE.has(a) || (term.has(area(a)) && section.has(area(a)));
+      });
+    });
+    // products with no location fall back to Kroger's category: keep them only if it's one
+    // the located products in this section share (sugar-free gum isn't "Baking Goods").
+    // Some categories span the whole store and say nothing about where a product goes.
+    const catOf = p => (CROSS_CATS.has(p.category) ? '' : p.category || '');
+    const cats = {};
+    for (const p of kept.flat()) if (!VAGUE.has((p.aisle || '').toUpperCase()) && catOf(p)) cats[catOf(p)] = (cats[catOf(p)] || 0) + 1;
+    const top = Math.max(0, ...Object.values(cats));
+    const sectionCats = new Set(Object.keys(cats).filter(c => cats[c] >= Math.max(2, top * SHARE_OF_SECTION)));
+    return kept.map(list => list.filter(p => !VAGUE.has((p.aisle || '').toUpperCase()) || !sectionCats.size || !catOf(p) || sectionCats.has(catOf(p))));
+  }
+
+  // older shelf caches (48 products, then unfiltered) are superseded; free their space
+  try { Object.keys(localStorage).filter(k => /^kw-shelf2?:/.test(k)).forEach(k => localStorage.removeItem(k)); } catch { /* storage blocked */ }
 
   // shelves are cached per store for 12h; if the browser's storage fills up, drop the oldest
   function saveShelf(key, value) {
@@ -86,14 +123,14 @@ function createFirstPerson(ctx) {
   async function loadLive(sec) {
     const kr = ctx.kr;
     if (!kr.online || !kr.configured || !kr.locationId) return null;
-    const ck = `kw-shelf2:${kr.locationId}:${sec.id}`;
+    const ck = `kw-shelf3:${kr.locationId}:${sec.id}`;
     const cached = ctx.persist.get(ck, null);
     if (cached && Date.now() - cached.t < 12 * 3600e3) return cached.products;
     const terms = termsFor(sec);
     const lists = await Promise.all(terms.map(t =>
       ctx.api(`/api/products?limit=${PER_TERM}&term=${encodeURIComponent(t)}`).then(r => r.products).catch(() => [])));
     const seen = new Set(), products = [];
-    for (const list of lists) for (const p of list) if (p.upc && !seen.has(p.upc)) { seen.add(p.upc); products.push(p); }
+    for (const list of inItsAisle(lists, sec.id)) for (const p of list) if (p.upc && !seen.has(p.upc)) { seen.add(p.upc); products.push(p); }
     if (!products.length) return null;
     // real planogram order where Kroger knows it: bay, top shelf first, then position on the shelf
     const n = v => parseInt(v, 10) || 0;
