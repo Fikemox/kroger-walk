@@ -510,11 +510,13 @@ function createFirstPerson(ctx) {
     st = { sides: [], kind, side: sideIdx, bay: 0, shelf: 0, slot: 0, anim: null, label, want: null };
     const live = !!(ctx.kr.online && ctx.kr.configured && ctx.kr.locationId);
     for (const ids of sides) {
-      const sd = { segs: ids.map(id => ({ sec: id, loading: live, live: false })) };
-      sd.segs.forEach(seg => stockSeg(seg, catalogFor(seg.sec)));
+      // a store map's sections already hold that store's products, in planogram order
+      const pre = id => (ctx.storeShelf ? ctx.storeShelf(id) : null);
+      const sd = { segs: ids.map(id => ({ sec: id, loading: live && !pre(id), live: !!pre(id) })) };
+      sd.segs.forEach(seg => stockSeg(seg, pre(seg.sec) ? pre(seg.sec).map(p => fromLive(p, ctx.SEC[seg.sec])).concat(ctx.customs(seg.sec)) : catalogFor(seg.sec)));
       flatten(sd);
       st.sides.push(sd);
-      for (const seg of sd.segs) if (live) loadLive(ctx.SEC[seg.sec]).then(list => {
+      for (const seg of sd.segs) if (live && !pre(seg.sec)) loadLive(ctx.SEC[seg.sec]).then(list => {
         seg.loading = false;
         if (!st || !st.sides.includes(sd)) return;
         if (list) {
@@ -531,7 +533,7 @@ function createFirstPerson(ctx) {
     }
     const sd = side(), gi = Math.max(0, sd.segs.findIndex(seg => seg.sec === startSec));
     st.bay = sd.start[gi] + Math.min(sd.segs[gi].bays.length - 1, Math.floor(bayFrac * sd.segs[gi].bays.length));
-    if (focusKey) { st.want = { key: focusKey, sec: focusKey.split(':')[0], name: nameOf(focusKey) }; applyWant(); }
+    if (focusKey) { const sec = secOfKey(focusKey, sides); st.want = { key: focusKey, sec, name: nameOf(focusKey, sec) }; applyWant(); }
     snap();
     el.hidden = false; ctx.mapEl.hidden = true;
     showPanel(true);
@@ -555,13 +557,20 @@ function createFirstPerson(ctx) {
       ctx.onExit({ bayFrac: frac, sec: seg.sec, kind });
     });
   }
-  function nameOf(key) {
-    const [sec] = key.split(':');
+  // catalog keys start with their section ("milk:2pct"); a store map's real products are
+  // "kr:<upc>", so look them up in the sections you're facing
+  function secOfKey(key, sides) {
+    const [pre] = key.split(':');
+    if (ctx.SEC[pre]) return pre;
+    for (const ids of sides) for (const id of ids) if (ctx.SEC[id] && ctx.SEC[id].items.some(i => i.key === key)) return id;
+    return pre;
+  }
+  function nameOf(key, sec = key.split(':')[0]) {
     const it = ctx.SEC[sec] && ctx.SEC[sec].items.find(i => i.key === key);
     return it ? it.name : '';
   }
   function goto(sec, key) {
-    st.want = { sec, key, name: key ? nameOf(key) : '' };
+    st.want = { sec, key, name: key ? nameOf(key, sec) : '' };
     const before = st.side;
     applyWant();
     if (st.side !== before) slide(st.side ? 1 : -1); else draw();

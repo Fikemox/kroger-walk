@@ -44,7 +44,8 @@ npm run deploy
 | Path | What it does |
 |---|---|
 | `public/` | The game: `index.html` (page, HUD, modals), `store.js` (104×40 floor plan), `catalog.js` (sections and offline sample products), `game.js` (movement, search, cart, checkout, match & send), `shelf.js` (first-person shelves; live products are cached 12h in localStorage) |
-| `src/worker.js` | Kroger OAuth, store search, product search, photo proxy and cart add. Anything that isn't one of these routes is served from `public/` |
+| `public/storemap.js` | Per-store maps: the build search terms, grouping products by aisle, side and bay, and the map generator |
+| `src/worker.js` | Kroger OAuth, store search, product search, photo proxy, cart add, and saved store maps (in the Durable Object, chunked). Anything that isn't one of these routes is served from `public/` |
 | `wrangler.toml` | Worker config: custom domains, the `Quota` Durable Object, and dev port 8642 (matches the registered redirect URI) |
 
 **Ordering:** at checkout, press **K** to match each list item to a product at your store and send everything to your Kroger cart (pickup). Kroger's API **can't place orders**, so you still choose a pickup time and pay in the Kroger app.
@@ -57,6 +58,13 @@ npm run deploy
 | First person | **A/D** product · **W/S** shelf · **Enter** grab · **X** put back · **Tab** turn around · **/** find · **I** label pop-up · **L** list · **Esc** step out |
 
 Walking into an aisle, or bumping into an outside wall (bakery/deli/meat/seafood, dairy, produce, service), switches to first person.
+
+**Store maps:** press **K** (the store picker), then **Build <store> map**. After a confirmation, about 340 searches (roughly 3% of a day's shared budget) collect the aisle, side, bay and shelf Kroger lists for around 14,000 products at that store. The map is built from them and saved on the server for everyone who shops that store, so it only has to be built once; **rebuild** refreshes it. The same picker switches between **Generic layout** and the store's own layout (remembered per device).
+- **Aisles:** the store's real numbered aisles, each side stocked with its actual products in planogram order.
+- **Departments:** the areas around the edge (produce, bakery, deli, meat, seafood, dairy, pharmacy, front end).
+- **Find:** searches every product in the store.
+
+Kroger doesn't publish floor plans, so aisles run left to right by number and the perimeter follows a standard Kroger template. The generator lives in `public/storemap.js`.
 
 **Phones and tablets:** touch-only devices (no mouse or trackpad) get a touch layout automatically, on the same URL:
 - **Moving:** tap to walk anywhere, and tap a shelf or counter to walk up and look at it. The map camera follows you, with a mini-map in the corner.

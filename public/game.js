@@ -1,15 +1,21 @@
-(() => {
+(async () => {
 'use strict';
 
 // ---------- data ----------
 const SEC = {};
 CATALOG.forEach(s => { SEC[s.id] = s; });
 SEC.checkout = { id: 'checkout', name: 'Checkout Lanes', color: '#ffd84a', items: [] };
-const S = buildStore(id => (SEC[id] && SEC[id].color) || '#cccccc');
+// Floor plan: the generic Kroger store, or this store's own layout if this device switched
+// to it (kw-map holds the store's location id). Only the store-map path waits on the network.
+const MAP_KEY = 'kw-map';
+const wantMap = (() => { try { return localStorage.getItem(MAP_KEY) || ''; } catch { return ''; } })();
+const storeLayout = wantMap ? await fetch('/api/layout?loc=' + encodeURIComponent(wantMap)).then(r => (r.ok ? r.json() : null)).catch(() => null) : null;
+if (wantMap && !storeLayout) { try { localStorage.removeItem(MAP_KEY); } catch { /* storage blocked */ } }
+const S = storeLayout ? buildStoreFromLayout(storeLayout, SEC) : buildStore(id => (SEC[id] && SEC[id].color) || '#cccccc');
 const { W, H, grid } = S;
 for (const [id, n] of Object.entries(S.aisleOf)) if (SEC[id]) SEC[id].aisle = n;
 const title = s => (s.aisle ? `Aisle ${s.aisle} · ${s.name}` : s.name);
-const ORDER = CATALOG.map(s => s.id);
+const ORDER = CATALOG.map(s => s.id).concat(S.storeSecs || []);
 
 // weekly "digital deals": ~10% of items 20% off, rotating each week
 const WEEK = Math.floor(Date.now() / 6048e5);
@@ -59,7 +65,7 @@ const DIR4 = [[0, -1], [0, 1], [-1, 0], [1, 0]];
 const rnd = n => Math.floor(Math.random() * n);
 function randomFloor() {
   for (;;) {
-    const x = 20 + rnd(80), y = 2 + rnd(30);
+    const x = S.store ? 1 + rnd(W - 2) : 20 + rnd(80), y = 2 + rnd(30);
     if (grid[y * W + x].walk) return { x, y };
   }
 }
@@ -182,7 +188,7 @@ function step(dx, dy) {
   }
   let cor = S.corridorAt(player.x, player.y);
   // crossing the middle cross-aisle while walking along the same aisle isn't leaving it
-  if (!cor && player.y === 16 && lastCorridor && player.x >= lastCorridor.x1 && player.x <= lastCorridor.x2) cor = lastCorridor;
+  if (!cor && player.y === (S.crossY || 16) && lastCorridor && player.x >= lastCorridor.x1 && player.x <= lastCorridor.x2) cor = lastCorridor;
   if (cor !== lastCorridor) {
     lastCorridor = cor;
     if (cor && autoFP && (!target || cor.secs.includes(target))) enterCorridor(cor);
@@ -209,7 +215,7 @@ function enterCorridor(cor, sideSec) {
   const side = Math.max(0, cor.secs.indexOf(want));
   const focusKey = focusKeyFor(cor.secs);
   if (target && cor.secs.includes(target)) { target = null; targetItem = null; path = []; }
-  openFP({ kind: 'aisle', sides: cor.secs.map(s => [s]), side, startSec: cor.secs[side], bayFrac: (player.y - 6) / 21, focusKey, label: cor.name.toUpperCase() });
+  openFP({ kind: 'aisle', sides: cor.secs.map(s => [s]), side, startSec: cor.secs[side], bayFrac: (player.y - (cor.y1 || 6)) / ((cor.y2 || 27) - (cor.y1 || 6)), focusKey, label: cor.name.toUpperCase() });
 }
 function enterWall(wall, cell) {
   const sec = grid[cell].sec, cells = S.cellsOf[sec];
@@ -230,8 +236,8 @@ function onExitFP({ bayFrac, sec, kind }) {
       if (grid[n] && grid[n].walk) { player.x = n % W; player.y = Math.floor(n / W); facing = d; break; }
     }
   } else if (cor) {
-    let y = 6 + Math.round(Math.min(0.999, bayFrac) * 21);
-    if (y === 16) y = 15;
+    let y = (cor.y1 || 6) + Math.round(Math.min(0.999, bayFrac) * ((cor.y2 || 27) - (cor.y1 || 6)));
+    if (y === (S.crossY || 16)) y = (S.crossY || 16) - 1;
     player.y = y;
     facing = cor.secs.indexOf(sec) === 1 ? [1, 0] : [-1, 0];
     lastCorridor = S.corridorAt(player.x, player.y);
@@ -244,6 +250,7 @@ function onExitFP({ bayFrac, sec, kind }) {
 
 function locationName() {
   const { x, y } = player;
+  if (S.locationName) return S.locationName(x, y);
   if (y >= 6 && y <= 27 && x >= 26 && x <= 78 && (x - 26) % 5 <= 2) {
     const [l, r] = S.AISLES[Math.floor((x - 26) / 5)];
     return `Aisle ${Math.floor((x - 26) / 5) + 1}: ${SEC[l].name} | ${SEC[r].name}`;
@@ -309,11 +316,11 @@ function fit() {
   document.body.appendChild(probe);
   const cw = probe.getBoundingClientRect().width / 5000;
   probe.remove();
-  const size = w => Math.max(6, Math.floor(Math.min(w / (W * cw), (wrap.clientHeight - 16) / (H * 1.12)) * 10) / 10) + 'px';
+  const size = (w, cols = W, rows = H) => Math.max(6, Math.floor(Math.min(w / (cols * cw), (wrap.clientHeight - 16) / (rows * 1.12)) * 10) / 10) + 'px';
   mapEl.style.fontSize = size(wrap.clientWidth - 16);
-  // first person shares the row with the details panel on its right
+  // first person (always a 104x40 grid) shares the row with the details panel on its right
   const info = $('fpInfo');
-  $('fp').style.fontSize = size(wrap.clientWidth - 16 - (info.hidden ? 0 : info.offsetWidth + 14));
+  $('fp').style.fontSize = size(wrap.clientWidth - 16 - (info.hidden ? 0 : info.offsetWidth + 14), 104, 40);
 }
 window.addEventListener('resize', fit);
 
@@ -402,8 +409,13 @@ document.addEventListener('click', () => setTimeout(() => {
 // ---------- directory ----------
 (function renderDir() {
   const rows = [];
-  S.AISLES.forEach(([l, r], i) => rows.push([`<span class="num">${i + 1}</span>${esc(SEC[l].name)} · ${esc(SEC[r].name)}`, l]));
-  for (const s of CATALOG) if (!s.aisle) rows.push([`<span class="num">·</span>${esc(s.name)} <span style="color:var(--dim)">${esc(s.dept)}</span>`, s.id]);
+  if (S.store) {
+    for (const c of S.corridors) rows.push([`<span class="num">${esc(c.name.replace('Aisle ', ''))}</span>${esc(SEC[c.secs[0]].name)} · ${esc(SEC[c.secs[1]].name)}`, SEC[c.secs[0]].items.length ? c.secs[0] : c.secs[1]]);
+    for (const id of S.storeSecs) if (!SEC[id].aisle) rows.push([`<span class="num">·</span>${esc(SEC[id].name)} <span style="color:var(--dim)">${SEC[id].items.length} items</span>`, id]);
+  } else {
+    S.AISLES.forEach(([l, r], i) => rows.push([`<span class="num">${i + 1}</span>${esc(SEC[l].name)} · ${esc(SEC[r].name)}`, l]));
+    for (const s of CATALOG) if (!s.aisle) rows.push([`<span class="num">·</span>${esc(s.name)} <span style="color:var(--dim)">${esc(s.dept)}</span>`, s.id]);
+  }
   $('dir').innerHTML = rows.map(([h, id]) => `<div data-sec="${id}">${h}</div>`).join('');
   $('dir').addEventListener('click', e => { const d = e.target.closest('[data-sec]'); if (d) navigate(d.dataset.sec); });
   if (M) document.querySelector('#dirPanel summary').textContent = 'STORE DIRECTORY (tap to walk there)';
@@ -516,9 +528,9 @@ function browseKey(e, k) {
 
 // ---------- find (search) ----------
 const INDEX = [];
-CATALOG.forEach(s => {
+(S.store ? S.storeSecs.map(id => SEC[id]) : CATALOG).forEach(s => {
   INDEX.push({ sec: s.id, section: true, name: title(s), text: `${s.name} ${s.dept}`.toLowerCase() });
-  s.items.forEach((it, i) => INDEX.push({ sec: s.id, idx: i, it, name: it.name, text: `${it.name} ${s.name}`.toLowerCase() }));
+  s.items.forEach((it, i) => INDEX.push({ sec: s.id, idx: i, it, name: it.name, text: `${it.name} ${s.name}${it.product ? ' ' + (it.product.brand || '') + ' ' + (it.product.category || '') : ''}`.toLowerCase() }));
 });
 let sr = { results: [], idx: 0 };
 function search(q) {
@@ -532,7 +544,7 @@ function openSearch() {
   mode = 'search';
   sr = { results: [], idx: 0 };
   openModal(`
-    <div class="ttl"><span>╡ Where is it? ╞</span><span style="color:var(--dim)">${INDEX.length - CATALOG.length} products</span></div>
+    <div class="ttl"><span>╡ Where is it? ╞</span><span style="color:var(--dim)">${INDEX.filter(e => !e.section).length} products</span></div>
     <div class="pad"><input id="sInput" placeholder="milk, salsa, paper towels, aisle stuff…" autocomplete="off"></div>
     <div class="rows" id="sRows"><div class="pad" style="color:var(--dim)">Type to search. Enter = walk me there. Shift+Enter = just add it.</div></div>
     <div class="foot keys"><b>↑↓</b> select · <b>Enter</b> get directions · <b>Shift+Enter</b> add to cart · <b>Esc</b> close</div>`, '#ff5cf0');
@@ -763,6 +775,7 @@ function openKroger() {
     </ol></div>`;
   const ready = `
     <div class="pad">Store: ${kr.locationName ? `<b>${esc(kr.locationName)}</b>` : '<span style="color:var(--dim)">none yet, so look one up</span>'}</div>
+    ${kr.locationId ? '<div class="pad" id="mapRow" style="color:var(--dim)">Store map: checking…</div>' : ''}
     <div class="pad"><input id="zipIn" placeholder="ZIP code, then Enter to list nearby stores" maxlength="10" inputmode="numeric"></div>
     <div class="rows" id="locRows"></div>
     <div class="pad btns">${kr.loggedIn
@@ -775,8 +788,9 @@ function openKroger() {
   $('krClose').onclick = closeModal;
   if ($('krIn')) $('krIn').onclick = () => { location.href = '/auth/login'; };
   if ($('krOut')) $('krOut').onclick = async () => { await api('/auth/logout', {}); await refreshKroger(); openKroger(); };
+  if (kr.locationId) drawMapRow();
   const zip = $('zipIn');
-  zip.focus();
+  if (!M) zip.focus();
   const lookup = async () => {
     $('locRows').innerHTML = '<div class="pad" style="color:var(--dim)">looking up stores…</div>';
     try {
@@ -788,6 +802,8 @@ function openKroger() {
         const row = ev.target.closest('.row'); if (!row) return;
         const l = locations[+row.dataset.i];
         await api('/api/location', { id: l.id, name: l.name });
+        // a store map belongs to one store; picking another goes back to the generic layout
+        if (wantMap && wantMap !== l.id) { try { localStorage.removeItem(MAP_KEY); } catch { /* storage blocked */ } location.reload(); return; }
         await refreshKroger();
         addLog(`🏪 Shopping at ${l.name}.`);
         openKroger();
@@ -804,6 +820,101 @@ function openKroger() {
     zip.placeholder = 'ZIP code';
     zip.addEventListener('input', () => { if (/^\d{5}$/.test(zip.value.trim())) lookup(); });
   }
+}
+
+// ---------- per-store map: switch & builder ----------
+async function drawMapRow() {
+  const row = $('mapRow');
+  if (!row) return;
+  const meta = await api('/api/layout?meta=1&loc=' + encodeURIComponent(kr.locationId)).catch(() => null);
+  if (!$('mapRow')) return;
+  const on = S.store && S.layout.loc === kr.locationId;
+  const built = meta && new Date(meta.built).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  row.style.color = '';
+  row.innerHTML = meta
+    ? `<div class="btns" style="align-items:center">Map:
+        <button data-m="generic" style="${on ? '' : 'border-color:var(--yellow);color:#fff'}">${on ? '' : '● '}Generic layout</button>
+        <button data-m="store" style="${on ? 'border-color:var(--yellow);color:#fff' : ''}">${on ? '● ' : ''}${esc(kr.locationName)} layout</button>
+        <span style="color:var(--dim);font-size:12.5px">built ${esc(built)} · ${meta.aisles} aisles · ${meta.count.toLocaleString()} products ·
+        <a href="#" data-m="rebuild">rebuild</a></span></div>`
+    : `<div class="btns" style="align-items:center"><span style="color:var(--dim)">No map of this store yet.</span>
+        <button data-m="build" style="border-color:var(--yellow);color:#fff">Build ${esc(kr.locationName)} map</button></div>`;
+  row.onclick = e => {
+    const b = e.target.closest('[data-m]'); if (!b) return;
+    e.preventDefault();
+    const m = b.dataset.m;
+    if (m === 'generic' && on) { try { localStorage.removeItem(MAP_KEY); } catch { /* storage blocked */ } location.reload(); }
+    if (m === 'store' && !on) { try { localStorage.setItem(MAP_KEY, kr.locationId); } catch { /* storage blocked */ } location.reload(); }
+    if (m === 'build' || m === 'rebuild') confirmBuild();
+  };
+}
+
+function confirmBuild() {
+  const left = kr.quota ? kr.quota.products.left : null;
+  mode = 'kroger';
+  openModal(`<div class="ttl"><span>╡ Build a map of ${esc(kr.locationName)} ╞</span></div>
+    <div class="help">This searches your store for about <b>${STORE_TERMS.length}</b> kinds of products, notes the aisle, side and shelf
+      Kroger lists for each, and builds a walkable map of this store with its real aisles.<br><br>
+      It uses up to <b>${STORE_TERMS.length}</b> of today's shared Kroger searches${left != null ? ` (<b>${left.toLocaleString()}</b> left today)` : ''}
+      and takes about a minute. The map is saved for everyone who shops this store, so it only has to be built once.<br>
+      <span style="color:var(--dim)">Kroger doesn't publish floor plans, so aisles run left to right by number and the departments around the edge
+      follow a standard Kroger layout. What's in each aisle, and on which side, is real.</span></div>
+    <div class="pad btns"><button id="bdGo" style="border-color:var(--yellow);color:#fff">Build it</button><button id="bdNo">Cancel</button></div>`, '#ffd84a');
+  $('bdNo').onclick = () => openKroger();
+  $('bdGo').onclick = buildStoreMap;
+  if (left != null && left < STORE_TERMS.length) {
+    $('bdGo').disabled = true;
+    $('bdGo').textContent = 'Not enough searches left today';
+  }
+}
+
+async function buildStoreMap() {
+  const job = { stop: false };
+  const loc = kr.locationId, name = kr.locationName;
+  openModal(`<div class="ttl"><span>╡ Mapping ${esc(name)} ╞</span><span id="bdPct" style="color:var(--dim)">0%</span></div>
+    <div class="pad"><pre id="bdBar" style="margin:0;color:var(--yellow)"></pre></div>
+    <div class="pad" id="bdMsg" style="color:var(--dim)">walking the aisles…</div>
+    <div class="pad btns"><button id="bdStop">Cancel</button></div>`, '#ffd84a');
+  $('bdStop').onclick = () => { job.stop = true; openKroger(); };
+  const found = new Map();
+  let done = 0, failed = 0, quotaOut = false, next = 0;
+  const show = () => {
+    if (!$('bdBar')) return;
+    const pct = Math.round(done / STORE_TERMS.length * 100), w = 30;
+    $('bdBar').textContent = '[' + '#'.repeat(Math.round(pct / 100 * w)).padEnd(w, '.') + ']';
+    $('bdPct').textContent = `${pct}%`;
+    $('bdMsg').textContent = `${done} / ${STORE_TERMS.length} searches · ${found.size.toLocaleString()} products found${failed ? ` · ${failed} failed` : ''}`;
+  };
+  show();
+  const worker = async () => {
+    while (next < STORE_TERMS.length && !job.stop && !quotaOut) {
+      const term = STORE_TERMS[next++];
+      try {
+        const { products } = await api('/api/products?limit=50&term=' + encodeURIComponent(term));
+        for (const p of products) if (p.upc && !found.has(p.upc)) found.set(p.upc, p);
+      } catch (err) { failed++; if (err.quotaOut) quotaOut = true; }
+      done++; show();
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  if (job.stop) return;
+  if (quotaOut || found.size < 200) {
+    $('bdMsg').innerHTML = `<span style="color:var(--red)">${quotaOut ? 'Kroger searches ran out for today' : 'Too few products came back'}, so no map was saved.</span>`;
+    $('bdStop').textContent = 'Close';
+    return;
+  }
+  $('bdMsg').textContent = `Sorting ${found.size.toLocaleString()} products into aisles…`;
+  const layout = assembleLayout(loc, name, [...found.values()]);
+  try {
+    await api('/api/layout', { layout });
+  } catch (err) {
+    $('bdMsg').innerHTML = `<span style="color:var(--red)">Couldn't save the map: ${esc(err.message)}</span>`;
+    $('bdStop').textContent = 'Close';
+    return;
+  }
+  try { localStorage.setItem(MAP_KEY, loc); } catch { /* storage blocked */ }
+  $('bdMsg').textContent = `Done: ${layout.aisles.length} aisles, ${layout.count.toLocaleString()} products. Loading your store…`;
+  setTimeout(() => location.reload(), 900);
 }
 
 // match each list line to a real product, then PUT them into the Kroger cart
@@ -1117,7 +1228,8 @@ function setupMobile() {
 
 // ---------- go ----------
 const fp = createFirstPerson({
-  W, H, SEC, title, mapEl, fpEl: $('fp'), infoEl: $('fpInfo'), fit, persist, memo, qty, addItem, api,
+  W: 104, H: 40, SEC,
+  storeShelf: id => (SEC[id] && SEC[id].storeSec ? SEC[id].products : null), title, mapEl, fpEl: $('fp'), infoEl: $('fpInfo'), fit, persist, memo, qty, addItem, api,
   get kr() { return kr; },
   customs: id => Object.values(cart).filter(e => e.custom && e.sec === id).map(e => (
     { key: e.key, name: e.name, label: e.name, size: '', price: 0, was: 0, stock: '', loc: null, sec: id, imgId: null, item: e })),

@@ -137,8 +137,8 @@ export class Quota extends DurableObject {
   async counts() {
     const day = this.today();
     if (this.day !== day) {
-      // new day: forget yesterday's counts and lockouts
-      const old = [...(await this.ctx.storage.list()).keys()].filter(k => !k.startsWith(day));
+      // new day: forget yesterday's counts and lockouts (dated keys only)
+      const old = [...(await this.ctx.storage.list()).keys()].filter(k => /^\d{4}-\d\d-\d\d:/.test(k) && !k.startsWith(day));
       if (old.length) await this.ctx.storage.delete(old);
       this.day = day;
     }
@@ -169,12 +169,32 @@ export class Quota extends DurableObject {
     await this.ctx.storage.put(k, n);
     return n;
   }
+  // ---- per-store maps (kept in their own instance, see layouts()) ----
+  // stored in chunks: Durable Object values are size-limited, a store map is a few MB
+  async putLayout(loc, json, meta) {
+    const old = (await this.ctx.storage.get(`layout:${loc}:meta`)) || { chunks: 0 };
+    const size = 120000, chunks = Math.ceil(json.length / size);
+    for (let i = 0; i < chunks; i++) await this.ctx.storage.put(`layout:${loc}:${i}`, json.slice(i * size, (i + 1) * size));
+    for (let i = chunks; i < old.chunks; i++) await this.ctx.storage.delete(`layout:${loc}:${i}`);
+    await this.ctx.storage.put(`layout:${loc}:meta`, { ...meta, chunks });
+  }
+  async layoutMeta(loc) { return (await this.ctx.storage.get(`layout:${loc}:meta`)) || null; }
+  async getLayout(loc) {
+    const meta = await this.layoutMeta(loc);
+    if (!meta) return null;
+    let json = '';
+    for (let i = 0; i < meta.chunks; i++) json += (await this.ctx.storage.get(`layout:${loc}:${i}`)) || '';
+    return json;
+  }
+
   async gateTries(ip) {
     return (await this.ctx.storage.get(`${this.today()}:gate:${ip}:${Math.floor(Date.now() / 900e3)}`)) || 0;
   }
 }
 
 const quota = env => env.QUOTA.get(env.QUOTA.idFromName('kroger'));
+const layouts = env => env.QUOTA.get(env.QUOTA.idFromName('layouts'));
+const MAX_LAYOUT = 8 * 1024 * 1024;
 
 class QuotaError extends Error {}
 
@@ -331,6 +351,31 @@ const routes = {
     const products = await budgeted(env, 'products', new URLSearchParams(params).toString(), EDGE_TTL.products, async () =>
       ((await apiGet('/products', params, await getAppToken(env))).data || []).map(simplifyProduct));
     return json({ products });
+  },
+
+  // per-store maps, shared by everyone who shops that store
+  'GET /api/layout': async (req, env, ctx) => {
+    const loc = (ctx.url.searchParams.get('loc') || '').slice(0, 16);
+    if (!/^\w+$/.test(loc)) return json({ error: 'bad store' }, 400);
+    if (ctx.url.searchParams.get('meta')) {
+      const meta = await layouts(env).layoutMeta(loc);
+      return meta ? json({ built: meta.built, count: meta.count, aisles: meta.aisles, name: meta.name }) : json({ error: 'no map yet' }, 404);
+    }
+    const body = await layouts(env).getLayout(loc);
+    return body ? new Response(body, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } }) : json({ error: 'no map yet' }, 404);
+  },
+
+  'POST /api/layout': async (req, env, ctx) => {
+    const text = await req.text();
+    if (text.length > MAX_LAYOUT) return json({ error: 'map too large' }, 413);
+    let layout;
+    try { ({ layout } = JSON.parse(text)); } catch { return json({ error: 'bad map' }, 400); }
+    // only for the store you're shopping, and only something shaped like a map
+    if (!layout || layout.v !== 1 || !ctx.session.loc || layout.loc !== ctx.session.loc || !Array.isArray(layout.aisles) || typeof layout.areas !== 'object')
+      return json({ error: 'map must be for your current store' }, 400);
+    const out = JSON.stringify(layout);
+    await layouts(env).putLayout(layout.loc, out, { built: layout.built, count: layout.count, aisles: layout.aisles.length, name: String(layout.name || '').slice(0, 80) });
+    return json({ ok: true, bytes: out.length });
   },
 
   'GET /api/img': async (req, env, ctx) => {
