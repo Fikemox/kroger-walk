@@ -135,6 +135,56 @@
   #cart { transition: background .6s; }
   #cart.flash { background: #1c2c4a; transition: none; }
 
+  /* ---------- whimsy: shopper encounters (handheld-RPG battle) ---------- */
+  #battle { position: fixed; inset: 0; z-index: 50; overflow: hidden; cursor: pointer; user-select: none; }
+  #battle[hidden] { display: none; }
+  #battle .b-flash { position: absolute; inset: 0; background: #fff; opacity: 0; }
+  #battle.flash .b-flash { animation: bflash .62s steps(1) both; }
+  @keyframes bflash { 0%, 34%, 68% { opacity: .95; background: #fff; } 17%, 51%, 85% { opacity: .9; background: #000; } 100% { opacity: 0; } }
+  #battle .b-bars { position: absolute; inset: 0; display: grid; grid-template-rows: repeat(10, 1fr); }
+  #battle .b-bars i { background: #000; transform: scaleX(0); transform-origin: left; transition: transform .35s ease-in; }
+  #battle .b-bars i:nth-child(even) { transform-origin: right; }
+  #battle.bars .b-bars i, #battle.scene .b-bars i { transform: scaleX(1); }
+  #battle .b-bars i:nth-child(1) { transition-delay: 0s; } #battle .b-bars i:nth-child(2) { transition-delay: .03s; }
+  #battle .b-bars i:nth-child(3) { transition-delay: .06s; } #battle .b-bars i:nth-child(4) { transition-delay: .09s; }
+  #battle .b-bars i:nth-child(5) { transition-delay: .12s; } #battle .b-bars i:nth-child(6) { transition-delay: .15s; }
+  #battle .b-bars i:nth-child(7) { transition-delay: .18s; } #battle .b-bars i:nth-child(8) { transition-delay: .21s; }
+  #battle .b-bars i:nth-child(9) { transition-delay: .24s; } #battle .b-bars i:nth-child(10) { transition-delay: .27s; }
+  #battle .b-scene { position: absolute; inset: 0; background: #e8f0d8; color: #203018; opacity: 0; transition: opacity .25s;
+                     display: grid; grid-template-rows: 1fr 1fr auto; padding: 4vh 5vw 3vh; font-size: clamp(14px, 2.2vw, 24px); }
+  #battle.scene .b-scene { opacity: 1; }
+  #battle .b-foe { justify-self: end; text-align: center; transform: translateX(120%); transition: transform .5s ease-out .15s; }
+  #battle .b-you { justify-self: start; align-self: end; text-align: center; transform: translateX(-120%); transition: transform .5s ease-out .15s; }
+  #battle.scene .b-foe, #battle.scene .b-you { transform: none; }
+  #battle.leaving .b-foe { transform: translateX(140%); transition: transform .9s ease-in .3s; }
+  #battle .b-sprite { margin: 0; font-size: clamp(18px, 3.4vw, 40px); line-height: 1.05; font-weight: bold; text-shadow: 2px 2px 0 rgba(0,0,0,.25); }
+  #battle .b-you .b-sprite { color: #2f7df6; }
+  #battle .b-foe .b-sprite { filter: brightness(.55) saturate(1.6); }   /* map colors are pastel; darken them on the light field */
+  #battle .b-pad { width: clamp(140px, 22vw, 300px); height: 18px; margin: 0 auto; border-radius: 50%; background: #b8c8a0; }
+  #battle .b-hud { background: #f8f8f0; border: 3px solid #203018; border-radius: 6px 0 6px 0; padding: 4px 10px; margin: 8px 0; text-align: left;
+                   display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; min-width: clamp(160px, 24vw, 320px); }
+  #battle .b-hp { grid-column: 1 / -1; height: 8px; border: 2px solid #203018; border-radius: 4px; background: #f8f8f0; }
+  #battle .b-hp i { display: block; height: 100%; width: 62%; background: #48b048; }
+  #battle .b-text { background: #f8f8f0; border: 4px double #203018; border-radius: 6px; padding: 14px 18px; min-height: 4.4em; line-height: 1.4; position: relative; }
+  #battle .b-text em { position: absolute; right: 14px; bottom: 8px; font-style: normal; opacity: 0; }
+  #battle.ready .b-text em { opacity: 1; animation: bblink .6s steps(1) infinite; }
+  @keyframes bblink { 50% { opacity: 0; } }
+  #battle.out { opacity: 0; transition: opacity .3s; }
+
+  /* ---------- whimsy: the locked wheel (pioneer-trail style) ---------- */
+  #trail { position: fixed; inset: 0; z-index: 50; background: #000; color: #f4f4f4; display: flex; align-items: center; justify-content: center;
+           font-family: 'Courier New', var(--font); padding: 16px; }
+  #trail[hidden] { display: none; }
+  #trail .t-box { width: min(640px, 100%); font-size: clamp(16px, 2.2vw, 22px); line-height: 1.5; text-transform: uppercase; }
+  #trail .t-art { color: #8be36f; margin: 0 0 12px; font-size: clamp(13px, 1.8vw, 18px); text-transform: none; }
+  #trail ol { margin: 8px 0; padding-left: 2.2em; }
+  #trail ol button { font: inherit; text-transform: inherit; background: none; border: 0; color: #f4f4f4; padding: 2px 6px; cursor: pointer; }
+  #trail ol button:hover, #trail ol button:focus { background: #f4f4f4; color: #000; }
+  #trail .t-cur { animation: bblink 1s steps(1) infinite; }
+  #trail .t-clang { font-size: clamp(48px, 10vw, 120px); text-align: center; color: #ffd84a; font-weight: bold; letter-spacing: 4px; }
+  body.shake { animation: shake .45s linear 1; }
+  @keyframes shake { 10%, 50%, 90% { transform: translate(-8px, 3px); } 30%, 70% { transform: translate(8px, -3px); } 100% { transform: none; } }
+
   /* ---------- phones & tablets: only when the page has .m (touch-only device) ---------- */
   #mini, #mBar, #mTabs, #sheetClose { display: none; }
   .m, .m body { overscroll-behavior: none; }
@@ -247,6 +297,8 @@
 <div id="mBar"><button data-k="Escape" aria-label="Back to the map">✕</button><button data-k="x" aria-label="Put one back">－</button><button data-k="Enter" class="add">＋ Add</button><button data-k="Tab">↻ Turn</button><button data-k="/" aria-label="Find">🔍</button><button data-k="l" aria-label="List and write-ins">☰</button></div>
 <nav id="mTabs"><button data-tab="map">Map</button><button data-tab="find">Find</button><button data-tab="cart">Cart<span id="mCartN"></span></button><button data-tab="kroger">Kroger</button></nav>
 <div id="toast"></div>
+<div id="battle" hidden></div>
+<div id="trail" hidden></div>
 <script src="catalog.js"></script>
 <script src="store.js"></script>
 <script src="storemap.js"></script>

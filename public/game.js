@@ -174,10 +174,13 @@ function navigate(sec, idx = null) {
 }
 
 function step(dx, dy) {
+  if (wheel.locked) { if (mode === 'walk') openWheel(); return; }
   facing = [dx, dy];
   const nx = player.x + dx, ny = player.y + dy;
   const bumped = grid[ny * W + nx];
-  if (bumped.walk) { player.x = nx; player.y = ny; socialize(); }
+  const shopper = bumped.walk && mode === 'walk' && npcs.find(n => !n.staff && n.x === nx && n.y === ny);
+  if (shopper && Date.now() - lastEncounter > ENCOUNTER_GAP) { dirty = true; return encounter(shopper); }
+  if (bumped.walk) { player.x = nx; player.y = ny; socialize(); wheelTick(); }
   else if (autoFP && mode === 'walk' && bumped.sec && S.wallOf(bumped.sec)) { dirty = true; return enterWall(S.wallOf(bumped.sec), ny * W + nx); }
   if (target && computePath()) {
     // arrived: face the target so E opens it
@@ -654,6 +657,8 @@ document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (mode === 'battle') return battleKey(e, k);
+  if (mode === 'wheel') return wheelKey(e, k);
   if (mode === 'fp') return fp.key(e, k);
   if (mode === 'browse') return browseKey(e, k);
   if (mode === 'match') return matchKey(e, k);
@@ -707,7 +712,7 @@ function interact() {
 
 function loop(now) {
   if (mode === 'walk' && held.size && lastKey) {
-    const delay = repeating ? (sprint ? 32 : 72) : 160;
+    const delay = (repeating ? (sprint ? 32 : 72) : 160) * wheel.drag;
     if (now - lastStep >= delay) { step(...held.get(lastKey)); lastStep = now; repeating = true; }
   }
   if (dirty && !fp.active) { render(); dirty = false; }
@@ -1064,6 +1069,197 @@ async function sendMatch() {
   }
 }
 
+// ---------- whimsy: shopper encounters ----------
+// Bump into a shopper and the screen flashes into a handheld-RPG battle. They say something
+// ridiculous (or about your cart), then wander off.
+const ENCOUNTER_GAP = 20000;   // at most one every 20s, so busy aisles stay walkable
+let lastEncounter = 0, battle = null;
+const pick = a => a[rnd(a.length)];
+const FOES = ['SHOPPER', 'COUPON CLIPPER', 'SAMPLE HUNTER', 'AISLE BLOCKER', 'CART RAMMER', 'SELF-CHECKOUT VET',
+  'MOM ON A MISSION', 'GUY ON SPEAKERPHONE', 'RETIREE', 'LOST TEEN', 'BOGO BANDIT', 'PRODUCE SQUEEZER'];
+const QUIPS = [
+  'Do you know which aisle the bread is in? I\'ve been looking for three years.',
+  'I only come here for the free samples. There are no free samples.',
+  'This cart has the wobbly wheel too. We\'re all connected.',
+  'Have you seen my husband? Tall. Holding a rotisserie chicken.',
+  'The self-checkout said "unexpected item in bagging area." It was me. I was the item.',
+  'I\'m not lost. I\'m exploring.',
+  'They moved the peanut butter AGAIN. I\'m writing a strongly worded letter.',
+  'I ate one grape as a treat. Is that a crime? Don\'t answer that.',
+  'Excuse me, do you work here? ...You have the energy of someone who works here.',
+  'My doctor said I need more greens. I\'m buying a green Gatorade.',
+  'Every time I come here I leave with forty dollars of cheese. Every time.',
+  'I came in for milk. I have a kayak now.',
+  'If anyone asks, I was never in the cookie aisle.',
+  'Stay back. I know exactly how many samples you\'ve had.',
+  'I\'ve been circling the store for an hour. I think I live here now.',
+  'Some people say "shopping cart." I say "chariot."',
+];
+const ABOUT_CART = [
+  'Ooh, {item}. Living dangerously, I see.',
+  '{item}? My grandma warned me about people like you.',
+  'Nice {item}. I\'d fight you for it, but my knee.',
+  'Is that {item}? I haven\'t had that since the before times.',
+  'Everybody\'s buying {item} today. Do you know something I don\'t?',
+  'You\'re really gonna put {item} on top of the eggs? Brave.',
+  '{item}. Interesting. Very interesting. I\'m telling my book club.',
+  'Ah, {item}. A shopper of culture.',
+  'Psst. The {item} two aisles over is on sale. ...I lied. I just wanted you to leave.',
+];
+const EXITS = ['wandered off toward the bakery.', 'remembered they left the oven on.', 'fled to aisle {aisle}!',
+  'got distracted by a SALE sign.', 'went to find a manager.', 'used ESCAPE ROPE! ...it was a jump rope from aisle {aisle}.',
+  'drifted away like a shopping cart in a parking lot.', 'is now examining a cantaloupe very seriously.'];
+const FOE_ART = [
+  '   ___ \n  (o_o)\n  /|_|\\ \n   / \\ ',
+  '  .---.\n ( >_<)\n  /| |\\]=[]\n  / \\  o o',
+  '   ~~~ \n  (^o^)\n <|___|>\n   | | ',
+  '  [___]\n  (-_-)\n  /|_|\\ \n  _| |_',
+];
+const YOU_ART = '   ___     \n  (   )    \n  /| |\\ ]==[]\n  / \\    o  o';
+function cartQuip() {
+  const items = Object.values(cart);
+  if (!items.length) return 'Your cart is empty. Are you just here for the vibes?';
+  const name = pick(items).name.replace(/\s*\(.*?\)/g, '').replace(/[®™]/g, '').trim();
+  return pick(ABOUT_CART).replace('{item}', name.length > 34 ? name.slice(0, 33) + '…' : name);
+}
+
+function encounter(n) {
+  lastEncounter = Date.now();
+  held.clear(); repeating = false;
+  mode = 'battle';
+  const foe = pick(FOES), aisle = 1 + rnd(11);
+  const quip = Object.keys(cart).length && Math.random() < 0.55 ? cartQuip() : pick(QUIPS);
+  battle = { n, foe, quip, lines: [`A wild ${foe} appeared!`, `${foe}: "${quip}"`, `${foe} ${pick(EXITS).replace('{aisle}', aisle)}`], i: -1, typing: null };
+  const el = $('battle');
+  el.innerHTML = `<div class="b-flash"></div><div class="b-bars">${'<i></i>'.repeat(10)}</div>
+    <div class="b-scene">
+      <div class="b-foe"><div class="b-hud"><b>${esc(foe)}</b><span>Lv${5 + rnd(60)}</span><div class="b-hp"><i></i></div></div>
+        <pre class="b-sprite" style="color:${n.color}">${esc(pick(FOE_ART))}</pre><div class="b-pad"></div></div>
+      <div class="b-you"><pre class="b-sprite">${esc(YOU_ART)}</pre><div class="b-pad"></div>
+        <div class="b-hud"><b>YOU</b><span>Lv${1 + Object.keys(cart).length}</span><div class="b-hp"><i style="width:100%"></i></div></div></div>
+      <div class="b-text"><span id="bText"></span><em>▼</em></div>
+    </div>`;
+  el.hidden = false;
+  el.className = 'flash';
+  // flash flash flash, then the stripes sweep in, then the scene slides in
+  setTimeout(() => { el.className = 'bars'; }, 620);
+  setTimeout(() => { el.className = 'scene'; nextLine(); }, 1250);
+  el.onclick = () => battleKey({ preventDefault() {} }, 'Enter');
+}
+function nextLine() {
+  const b = battle;
+  if (!b) return;
+  if (b.typing) {                                   // still typing: finish the line now
+    clearInterval(b.typing); b.typing = null;
+    $('bText').textContent = b.lines[b.i];
+    $('battle').classList.add('ready');
+    return;
+  }
+  b.i++;
+  if (b.i >= b.lines.length) return endBattle();
+  if (b.i === b.lines.length - 1) $('battle').classList.add('leaving');
+  const line = b.lines[b.i];
+  let c = 0;
+  $('battle').classList.remove('ready');
+  b.typing = setInterval(() => {
+    c += 2;
+    $('bText').textContent = line.slice(0, c);
+    if (c >= line.length) { clearInterval(b.typing); b.typing = null; $('battle').classList.add('ready'); }
+  }, 28);
+}
+function endBattle() {
+  const b = battle;
+  battle = null;
+  const el = $('battle');
+  el.className = 'out';
+  setTimeout(() => { el.hidden = true; el.className = ''; el.innerHTML = ''; }, 300);
+  Object.assign(b.n, randomFloor());                // they move on
+  addLog(`${b.foe}: "${b.quip}"`);
+  mode = 'walk'; dirty = true; updateHud();
+  if (M && path.length) autoWalk();
+}
+function battleKey(e, k) {
+  if (['Enter', ' ', 'e', 'Escape', 'a'].includes(k) && e.preventDefault) e.preventDefault();
+  if (!battle || !$('battle').classList.contains('scene')) return;   // wait out the flashy intro
+  if (k === 'Escape') { if (battle.typing) { clearInterval(battle.typing); battle.typing = null; } return endBattle(); }
+  if (['Enter', ' ', 'e', 'a'].includes(k)) nextLine();
+}
+
+// ---------- whimsy: the wheel ----------
+// Once per browser hour (at most), the cart's wheel starts squeaking, drags, and locks up.
+// Kick it to keep going.
+const WHEEL_KEY = 'kw-wheel', WHEEL_EVERY = 3600e3, WHEEL_CHANCE = 0.004;
+const bootTime = Date.now();
+const wheel = { drag: 1, slowing: 0, locked: false };
+const SQUEAKS = ['*squeak*', '*squeak* *squeak*', 'The cart pulls hard to the left.', '*SQUEEEAK*', 'The wheel shudders...', 'Clunk.'];
+function wheelTick() {
+  if (wheel.slowing) {
+    wheel.slowing++;
+    wheel.drag = [1, 1.3, 1.6, 2, 2.6, 3.4, 4.5, 6, 8][Math.min(8, wheel.slowing)];
+    if (wheel.slowing % 2 === 0) addLog(SQUEAKS[Math.min(SQUEAKS.length - 1, wheel.slowing / 2)]);
+    if (wheel.slowing >= 9) lockWheel();
+    return;
+  }
+  const last = persist.get(WHEEL_KEY, 0);
+  if (Date.now() - last < WHEEL_EVERY || Date.now() - bootTime < 60e3) return;   // not in the first minute, max once an hour
+  if (Math.random() < WHEEL_CHANCE) { wheel.slowing = 1; addLog('*squeak*'); }
+}
+function lockWheel() {
+  wheel.slowing = 0; wheel.drag = 1; wheel.locked = true;
+  persist.set(WHEEL_KEY, Date.now());
+  held.clear(); repeating = false;
+  if (M) stopWalk();
+  openWheel();
+}
+const WHEEL_TRIES = {
+  wiggle: ['You wiggle the cart back and forth.', 'It makes a sad little noise.', 'The wheel is still locked.'],
+  corral: ['The nearest cart corral is across the parking lot.', 'It is raining. It is always raining.', 'You decide to stay.'],
+};
+function openWheel(msg) {
+  mode = 'wheel';
+  const el = $('trail');
+  el.hidden = false;
+  el.innerHTML = `<div class="t-box">
+    <pre class="t-art">      _______________
+     |               |
+     |  KROGER  CART |
+     |_______________|
+        O         X   <-- </pre>
+    <p>${msg || 'YOUR CART HAS A LOCKED WHEEL.<br>YOU CANNOT CONTINUE.'}</p>
+    <p>You may:</p>
+    <ol><li><button data-w="kick">Kick it</button></li><li><button data-w="wiggle">Wiggle it</button></li><li><button data-w="corral">Get a new cart</button></li></ol>
+    <p class="t-ask">What is your choice? <span class="t-cur">_</span></p></div>`;
+  el.onclick = e => { const b = e.target.closest('[data-w]'); if (b) wheelChoice(b.dataset.w); };
+}
+function wheelChoice(w) {
+  if (w === 'kick') return kickWheel();
+  openWheel(WHEEL_TRIES[w].map(esc).join('<br>').toUpperCase());
+}
+function kickWheel() {
+  const el = $('trail');
+  el.innerHTML = '<div class="t-box"><div class="t-clang">*CLANG*</div></div>';
+  document.body.classList.add('shake');
+  setTimeout(() => {
+    document.body.classList.remove('shake');
+    el.innerHTML = `<div class="t-box"><p>YOU KICK THE WHEEL.<br>IT SPINS FREELY!</p>
+      <p>YOU LOST 0 DAYS.<br>ONE SHOPPER SAW THE WHOLE THING.</p><p class="t-ask">Press ENTER to continue <span class="t-cur">_</span></p></div>`;
+    wheel.locked = false; wheel.kicked = true;
+    el.onclick = closeWheel;
+  }, 700);
+}
+function closeWheel() {
+  const el = $('trail');
+  el.hidden = true; el.innerHTML = ''; wheel.kicked = false;
+  mode = 'walk'; dirty = true; updateHud();
+  addLog('The wheel spins freely again. For now.');
+}
+function wheelKey(e, k) {
+  if (e.preventDefault) e.preventDefault();
+  if (wheel.kicked) { if (['Enter', ' ', 'Escape', 'e'].includes(k)) closeWheel(); return; }
+  const choice = { 1: 'kick', k: 'kick', 2: 'wiggle', w: 'wiggle', 3: 'corral', n: 'corral' }[k];
+  if (wheel.locked && choice) wheelChoice(choice);
+}
+
 // ---------- phones & tablets (touch only; desktop never runs any of this) ----------
 let cam = { x0: 0, y0: 0, w: W, h: H };
 let camSize = { cols: W, rows: H };
@@ -1134,12 +1330,14 @@ function drawMini(c) {
 
 // tap-to-walk: follow the path one step at a time through the normal step(), so aisles,
 // walls and directions behave exactly like walking with the keyboard
-let walker = null;
+let walker = null, lastAuto = 0;
 function stopWalk() { clearInterval(walker); walker = null; }
 function autoWalk() {
   stopWalk();
   walker = setInterval(() => {
     if (mode !== 'walk') return stopWalk();
+    if (wheel.drag > 1 && performance.now() - lastAuto < 65 * wheel.drag) return;
+    lastAuto = performance.now();
     if (!path.length) {
       stopWalk();
       if (target && computePath()) interact();   // arrived at a shelf or counter: look at it
@@ -1254,5 +1452,5 @@ refreshKroger().then(() => {
   if (kr.configured && !kr.locationId && mode === 'walk') { addLog('Welcome! Pick your Kroger store to stock the shelves.'); openKroger(); }
 });
 requestAnimationFrame(loop);
-window.kw = { player, step, navigate, interact, openMatch, openCheckout, refreshKroger, kr, M, get path() { return path; }, get cam() { return cam; }, get mode() { return mode; } }; // console poking
+window.kw = { player, step, navigate, interact, openMatch, openCheckout, refreshKroger, kr, M, npcs, encounter, lockWheel, wheel, get path() { return path; }, get cam() { return cam; }, get mode() { return mode; } }; // console poking
 })();
