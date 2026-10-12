@@ -11,6 +11,8 @@
 // Secrets (wrangler secret put, or .dev.vars for local dev):
 //   KROGER_CLIENT_ID, KROGER_CLIENT_SECRET, SESSION_KEY (32+ random chars)
 //   SITE_PASSWORD (optional): the shared password friends type once to get in
+//   DEV_ORIGIN (.dev.vars only): http://localhost:8642. `wrangler dev` rewrites every request
+//     to the production hostname, so this is how the Worker knows it's local
 import { DurableObject } from 'cloudflare:workers';
 
 const API = 'https://api.kroger.com/v1';
@@ -239,7 +241,7 @@ const gatePage = (msg = '') => new Response(`<!doctype html><html lang="en"><hea
 async function gate(req, env, url) {
   if (!env.SITE_PASSWORD) {
     // no password: fine for local dev, but never leave the real site open by accident
-    return url.hostname === 'localhost' ? null : new Response('SITE_PASSWORD is not set.', { status: 503 });
+    return env.DEV_ORIGIN ? null : new Response('SITE_PASSWORD is not set.', { status: 503 });
   }
   const ok = sameString(cookies(req)[GATE_COOKIE] || '', await gateToken(env));
   if (req.method === 'POST' && url.pathname === '/gate') {
@@ -273,7 +275,7 @@ const routes = {
     const state = b64u(crypto.getRandomValues(new Uint8Array(16)));
     return redirect(API + '/connect/oauth2/authorize?' + new URLSearchParams({
       scope: USER_SCOPES, response_type: 'code', client_id: env.KROGER_CLIENT_ID,
-      redirect_uri: ctx.url.origin + '/callback', state,
+      redirect_uri: ctx.origin + '/callback', state,
     }), { 'Set-Cookie': cookie(ctx.url, STATE_COOKIE, state, 600) });
   },
 
@@ -284,7 +286,7 @@ const routes = {
       return redirect('/?kroger=loginfailed', { 'Set-Cookie': clearState });
     let t;
     try {
-      t = await tokenRequest(env, { grant_type: 'authorization_code', code: q.get('code'), redirect_uri: ctx.url.origin + '/callback' });
+      t = await tokenRequest(env, { grant_type: 'authorization_code', code: q.get('code'), redirect_uri: ctx.origin + '/callback' });
     } catch { return redirect('/?kroger=loginfailed', { 'Set-Cookie': clearState }); }
     Object.assign(ctx.session, { at: t.access_token, rt: t.refresh_token, exp: Date.now() / 1000 + (t.expires_in || 1800) });
     const headers = new Headers({ Location: '/?kroger=connected' });
@@ -382,12 +384,7 @@ async function userToken(env, ctx) {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
-    if (url.hostname === '127.0.0.1') {
-      // localStorage (the cart) is per-origin; keep local dev on the same origin as the OAuth redirect
-      url.hostname = 'localhost';
-      return redirect(url.toString());
-    }
-    if (url.hostname !== 'localhost' && (url.hostname.startsWith('www.') || url.protocol === 'http:')) {
+    if (!env.DEV_ORIGIN && (url.hostname.startsWith('www.') || url.protocol === 'http:')) {
       // one https origin, so cookies, the cart and the OAuth redirect all line up
       url.hostname = url.hostname.replace(/^www\./, '');
       url.protocol = 'https:';
@@ -398,7 +395,7 @@ export default {
     const route = routes[`${req.method} ${url.pathname}`];
     if (!route) return env.ASSETS.fetch(req);
 
-    const ctx = { url, session: {}, dirty: false };
+    const ctx = { url, origin: env.DEV_ORIGIN || url.origin, session: {}, dirty: false };
     const raw = cookies(req)[SESSION_COOKIE];
     if (raw && env.SESSION_KEY) ctx.session = (await unseal(env, raw)) || {};
     let res;

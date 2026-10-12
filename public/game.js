@@ -296,8 +296,11 @@ function fit() {
   document.body.appendChild(probe);
   const cw = probe.getBoundingClientRect().width / 5000;
   probe.remove();
-  const fs = Math.min((wrap.clientWidth - 16) / (W * cw), (wrap.clientHeight - 16) / (H * 1.12));
-  mapEl.style.fontSize = $('fp').style.fontSize = Math.max(6, Math.floor(fs * 10) / 10) + 'px';
+  const size = w => Math.max(6, Math.floor(Math.min(w / (W * cw), (wrap.clientHeight - 16) / (H * 1.12)) * 10) / 10) + 'px';
+  mapEl.style.fontSize = size(wrap.clientWidth - 16);
+  // first person shares the row with the details panel on its right
+  const info = $('fpInfo');
+  $('fp').style.fontSize = size(wrap.clientWidth - 16 - (info.hidden ? 0 : info.offsetWidth + 14));
 }
 window.addEventListener('resize', fit);
 
@@ -910,7 +913,7 @@ async function sendMatch() {
 
 // ---------- go ----------
 const fp = createFirstPerson({
-  W, H, SEC, title, mapEl, fpEl: $('fp'), persist, memo, qty, addItem, api,
+  W, H, SEC, title, mapEl, fpEl: $('fp'), infoEl: $('fpInfo'), fit, persist, memo, qty, addItem, api,
   get kr() { return kr; },
   customs: id => Object.values(cart).filter(e => e.custom && e.sec === id).map(e => (
     { key: e.key, name: e.name, label: e.name, size: '', price: 0, was: 0, stock: '', loc: null, sec: id, imgId: null, item: e })),

@@ -107,7 +107,29 @@
   .fp-photos { position: absolute; inset: 0; pointer-events: none; }
   .fp-photos img { position: absolute; object-fit: contain; background: #fff; border-radius: 4px; padding: 3px; box-sizing: border-box; }
   .fp-photos img.sel { outline: 3px solid var(--yellow); outline-offset: 1px; }
-  .fp-photos img.big { padding: 8px; border-radius: 6px; }
+  /* product details: its own column right of the shelves, so it never covers a product */
+  #mapwrap { gap: 14px; }
+  #fpInfo { --accent: var(--yellow); width: clamp(200px, 21vw, 340px); flex: none; align-self: stretch; display: flex; flex-direction: column;
+            gap: 6px; border: 1px solid var(--accent); background: #0e1220; padding: 10px 12px; overflow-y: auto; font-size: 14px; line-height: 1.35; }
+  #fpInfo[hidden] { display: none; }
+  #fpInfo .fi-sec { color: #0b0d13; background: var(--accent); padding: 0 6px; align-self: flex-start; letter-spacing: 1px; text-transform: uppercase; font-size: 12.5px; }
+  #fpInfo .fi-img { background: #fff; border-radius: 6px; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  #fpInfo .fi-img img { width: 100%; height: 100%; object-fit: contain; padding: 8px; box-sizing: border-box; }
+  #fpInfo .fi-img pre { display: none; margin: 0; color: var(--dim); }
+  #fpInfo .fi-img.none { background: #151a28; }
+  #fpInfo .fi-img.none img { display: none; }
+  #fpInfo .fi-img.none pre { display: block; }
+  #fpInfo .fi-body { display: flex; flex-direction: column; gap: 4px; }
+  #fpInfo .fi-name { color: #fff; font-size: 15px; }
+  #fpInfo .fi-price { color: var(--yellow); font-size: 16px; }
+  #fpInfo .fi-price s { color: var(--dim); }
+  #fpInfo .fi-sale { color: #0b0d13; background: var(--yellow); padding: 0 4px; }
+  #fpInfo .fi-dim, #fpInfo .fi-cart { color: var(--dim); }
+  #fpInfo .fi-cart.in { color: var(--green); }
+  #fpInfo .fi-stock.ok { color: var(--green); } #fpInfo .fi-stock.low { color: var(--yellow); } #fpInfo .fi-stock.out { color: var(--red); }
+  #fpInfo .fi-keys { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); color: var(--dim); font-size: 12.5px; }
+  #fpInfo .fi-keys b { color: var(--yellow); font-weight: normal; }
+  #fpInfo .fi-empty { color: var(--dim); padding: 12px 0; }
   #toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); background: var(--blue); color: #fff; padding: 6px 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.on { opacity: 1; }
   #cart { transition: background .6s; }
@@ -121,7 +143,7 @@
   <span class="keys"><b>WASD</b>/arrows move · <b>Shift</b> run · <b>E</b> look · <b>/</b> find · <b>C</b> checkout · <b>K</b> kroger · <b>V</b> auto-aisle · <b>?</b> help</span>
 </header>
 <main>
-  <section id="mapwrap"><pre id="map"></pre><div class="fp-box"><pre id="fp" hidden></pre></div><div id="modal" hidden></div></section>
+  <section id="mapwrap"><pre id="map"></pre><div class="fp-box"><pre id="fp" hidden></pre></div><aside id="fpInfo" hidden></aside><div id="modal" hidden></div></section>
   <aside>
     <div class="panel" id="cart">
       <h2>CART <span id="cartCount" style="color:var(--dim)"></span></h2>

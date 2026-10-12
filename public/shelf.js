@@ -8,7 +8,9 @@ function createFirstPerson(ctx) {
   const el = ctx.fpEl;
   const DIM = '#6b7690', TEXT = '#e6ecff', EDGE = '#56627e', HILITE = '#24324f';
   let st = null;
-  let info = ctx.persist.get('kw-fp-info', true);
+  // product details live in a side panel to the right of the shelves, never on top of them
+  let info = ctx.persist.get('kw-fp-panel', true);
+  const infoEl = ctx.infoEl;
 
   // ---------- section search terms for live stocking ----------
   const TERMS = {
@@ -330,44 +332,52 @@ function createFirstPerson(ctx) {
       if (!r.length) text(g, LEFT, y0 + 2, '(empty shelf)', '#3a4258');
     });
     fillRect(g, 3, TOP + SHELVES * SHELF_H, W - 6, 1, '.', '#2a3042');
-    text(g, 2, H - 3, 'A/D product  W/S shelf  Enter grab  X put back  Tab turn  / find  I label  L list  Esc step out', DIM);
+    text(g, 2, H - 3, 'A/D product  W/S shelf  Enter grab  X put back  Tab turn  / find  I details  L list  Esc step out', DIM);
     if (sd.bays.length > 1) text(g, 2, H - 2, `More bays this way: ${st.bay > 0 ? '‹ ' : ''}${st.bay < sd.bays.length - 1 ? '›' : ''}`, '#3f4a66');
-    if (info && cur) popup(g, cur);
     return g;
   }
 
-  function popup(g, p) {
-    const r = row();
-    const first = r.indexOf(p), n = r.filter(x => x === p).length;
-    const px = LEFT + first * SLOT_STEP, pw = n * SLOT_STEP - 1;
-    const y0 = TOP + st.shelf * SHELF_H;
-    const ART_ROWS = 13;
-    const bw = 46;
-    const lines = [];
-    wrap(p.name, bw - 4, 3).forEach(l => lines.push([l, '#ffffff']));
-    if (!p.item.custom) lines.push([[p.size, p.was ? `SALE $${p.price.toFixed(2)} (was $${p.was.toFixed(2)})` : `$${p.price.toFixed(2)}`].filter(Boolean).join(' · '), p.was ? '#ffd84a' : TEXT]);
-    if (p.stock) lines.push([{ HIGH: 'in stock', LOW: 'low stock', TEMPORARILY_OUT_OF_STOCK: 'OUT OF STOCK' }[p.stock] || p.stock.toLowerCase(), /OUT/.test(p.stock) ? '#ff6b6b' : /LOW/.test(p.stock) ? '#ffd84a' : '#8be36f']);
-    if (p.loc && p.loc.aisle) lines.push([`your store: aisle ${p.loc.aisle}${p.loc.side ? ' ' + p.loc.side : ''}${p.loc.bay ? ' · bay ' + p.loc.bay : ''}${p.loc.shelf ? ' · shelf ' + p.loc.shelf : ''}`, DIM]);
-    const q = ctx.qty(p.key);
-    lines.push([q ? `in your cart: ${q}` : 'not in your cart', q ? '#8be36f' : DIM]);
-    lines.push(['[Enter] grab one   [X] put one back', '#ffd84a']);
-    const artH = hasPhoto(p) ? ART_ROWS + 1 : 0;
-    const bh = lines.length + artH + 2;
-    // opposite half of the shelf from the product, so the product itself stays in view
-    const bx = px + pw / 2 < W / 2 ? W - bw - 5 : 4;
-    const by = Math.max(2, Math.min(H - bh - 3, y0 - 4));
-    const accent = ctx.SEC[p.sec].color;
-    fillRect(g, bx, by, bw, bh, ' ', TEXT, '#0e1220');
-    text(g, bx, by, '┌' + '─'.repeat(bw - 2) + '┐', accent);
-    text(g, bx, by + bh - 1, '└' + '─'.repeat(bw - 2) + '┘', accent);
-    for (let j = 1; j < bh - 1; j++) { put(g, bx, by + j, '│', accent); put(g, bx + bw - 1, by + j, '│', accent); }
-    let y = by + 1;
-    photos = photos.filter(ph => ph.x + ph.w <= bx || ph.x >= bx + bw || ph.y + ph.h <= by || ph.y >= by + bh);
-    if (artH) {
-      photos.push({ id: p.imgId, x: bx + 2, y, w: bw - 4, h: ART_ROWS, size: 'large', big: true });
-      y += artH;
+  // ---------- details panel (right of the shelves) ----------
+  const escHtml = v => String(v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  // the photo element is kept between renders so moving along the shelf never flashes
+  infoEl.innerHTML = '<div class="fi-sec"></div><div class="fi-img"><img alt=""><pre>  .------.\n  |      |\n  |  ??  |\n  |      |\n  \'------\'</pre></div><div class="fi-body"></div>';
+  const fiSec = infoEl.querySelector('.fi-sec'), fiImg = infoEl.querySelector('.fi-img'), fiBody = infoEl.querySelector('.fi-body');
+  const bigImg = fiImg.querySelector('img');
+  bigImg.onerror = () => { if (bigImg.dataset.id) failed.add(bigImg.dataset.id); queueRedraw(); };
+  function showPanel(on) {
+    const want = !!(on && info);
+    if (infoEl.hidden === !want) return;
+    infoEl.hidden = !want;
+    ctx.fit();
+  }
+  function renderInfo() {
+    if (!st || infoEl.hidden) return;
+    const p = current();
+    const sec = ctx.SEC[curSeg().sec];
+    infoEl.style.setProperty('--accent', sec.color);
+    fiSec.textContent = ctx.title(sec);
+    fiImg.hidden = !p;
+    if (!p) { fiBody.innerHTML = '<div class="fi-empty">Nothing on this shelf.<br>W/S to look up and down.</div>'; return; }
+    const photo = hasPhoto(p);
+    fiImg.classList.toggle('none', !photo);
+    if (photo && bigImg.dataset.id !== p.imgId) {
+      bigImg.dataset.id = p.imgId;
+      bigImg.src = `/api/img?id=${encodeURIComponent(p.imgId)}&size=large`;
     }
-    for (const [l, c] of lines) text(g, bx + 2, y++, l.slice(0, bw - 4), c);
+    const q = ctx.qty(p.key);
+    const stock = p.stock && ({ HIGH: ['in stock', 'ok'], LOW: ['low stock', 'low'], TEMPORARILY_OUT_OF_STOCK: ['out of stock', 'out'] }[p.stock] || [p.stock.toLowerCase(), '']);
+    const where = p.loc && p.loc.aisle
+      ? `aisle ${p.loc.aisle}${p.loc.side ? ' ' + p.loc.side : ''}${p.loc.bay ? ' · bay ' + p.loc.bay : ''}${p.loc.shelf ? ' · shelf ' + p.loc.shelf : ''}` : '';
+    const price = p.item.custom ? '<span class="fi-dim">your write-in</span>'
+      : p.was ? `<span class="fi-sale">SALE $${p.price.toFixed(2)}</span> <s>$${p.was.toFixed(2)}</s>` : `$${p.price.toFixed(2)}`;
+    fiBody.innerHTML = `
+      <div class="fi-name">${escHtml(p.name)}</div>
+      ${p.size ? `<div class="fi-dim">${escHtml(p.size)}</div>` : ''}
+      <div class="fi-price">${price}</div>
+      ${stock ? `<div class="fi-stock ${stock[1]}">${escHtml(stock[0])}</div>` : ''}
+      ${where ? `<div class="fi-dim">your store: ${escHtml(where)}</div>` : ''}
+      <div class="fi-cart ${q ? 'in' : ''}">${q ? `in your cart: ${q}` : 'not in your cart'}</div>
+      <div class="fi-keys"><b>Enter</b> grab one<br><b>X</b> put one back<br><b>I</b> hide details</div>`;
   }
 
   // ---------- walking-in corridor (pseudo-3D) ----------
@@ -426,7 +436,7 @@ function createFirstPerson(ctx) {
     const g = shelfGrid();
     play('slide', 160, t => { const sh = Math.round(d * (1 - ease(t)) * W * 0.6); shiftPhotos(sh); return toHtml(g, sh); }, () => { shiftPhotos(0); draw(); });
   }
-  function draw() { if (st && !st.anim) { el.innerHTML = toHtml(shelfGrid()); placePhotos(); } }
+  function draw() { if (st && !st.anim) { el.innerHTML = toHtml(shelfGrid()); placePhotos(); renderInfo(); } }
 
   // ---------- public ----------
   // sides: [[secId, ...], ...]  one list per side you can face (Tab turns between them)
@@ -459,6 +469,7 @@ function createFirstPerson(ctx) {
     if (focusKey) { st.want = { key: focusKey, sec: focusKey.split(':')[0], name: nameOf(focusKey) }; applyWant(); }
     snap();
     el.hidden = false; ctx.mapEl.hidden = true;
+    showPanel(true);
     const ids = sides.map(s => s[0]);
     const colors = ids.length > 1 ? ids.map(id => ctx.SEC[id].color) : [ctx.SEC[startSec || ids[0]].color, ctx.SEC[startSec || ids[0]].color];
     const final = shelfGrid();
@@ -475,7 +486,7 @@ function createFirstPerson(ctx) {
     const seg = curSeg(), frac = (st.bay - segStart(seg) + 0.5) / seg.bays.length, kind = st.kind;
     const colors = st.sides.length > 1 ? st.sides.map(s => ctx.SEC[s.segs[0].sec].color) : [ctx.SEC[seg.sec].color, ctx.SEC[seg.sec].color];
     play('out', 280, t => toHtml(corridorGrid(1 - ease(t), colors, st.label)), () => {
-      st = null; el.hidden = true; ctx.mapEl.hidden = false; photos = []; placePhotos(); clearPhotos();
+      st = null; el.hidden = true; ctx.mapEl.hidden = false; photos = []; placePhotos(); clearPhotos(); showPanel(false);
       ctx.onExit({ bayFrac: frac, sec: seg.sec, kind });
     });
   }
@@ -511,7 +522,7 @@ function createFirstPerson(ctx) {
         snap();
         slide(st.side ? 1 : -1);
       },
-      i: () => { info = !info; ctx.persist.set('kw-fp-info', info); draw(); },
+      i: () => { info = !info; ctx.persist.set('kw-fp-panel', info); showPanel(info); draw(); },
       l: () => ctx.openList(curSeg().sec), n: () => ctx.openList(curSeg().sec),
       '/': () => ctx.openSearch(), f: () => ctx.openSearch(),
       Escape: exit, q: exit,
