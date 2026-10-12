@@ -6,3 +6,4 @@ kroger_tokens.json
 node_modules/
 .wrangler/
 __pycache__/
+tests/out/

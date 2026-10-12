@@ -74,6 +74,10 @@ Kroger doesn't publish floor plans, so aisles run left to right by number and th
 
 Anything with a mouse gets the desktop game unchanged. Add `?mobile` or `?desktop` to the URL to force either layout.
 
+## Tests
+
+`tests/` holds Playwright scripts for the desktop regression, the touch layout, store maps and the shopper/wheel features. See `tests/README.md`.
+
 ## Security notes
 
 - The Kroger client secret is a Worker secret and never reaches the browser.
