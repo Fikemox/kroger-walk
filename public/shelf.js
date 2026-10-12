@@ -60,23 +60,45 @@ function createFirstPerson(ctx) {
     };
   }
 
+  // Kroger counts requests, not products, so every term asks for its max page of 50
+  const PER_TERM = 50;
+
+  // the old 48-product shelf caches are superseded; free their space
+  try { Object.keys(localStorage).filter(k => k.startsWith('kw-shelf:')).forEach(k => localStorage.removeItem(k)); } catch { /* storage blocked */ }
+
+  // shelves are cached per store for 12h; if the browser's storage fills up, drop the oldest
+  function saveShelf(key, value) {
+    const json = JSON.stringify(value);
+    for (let tries = 0; tries < 50; tries++) {
+      try { localStorage.setItem(key, json); return; } catch { /* full: evict below */ }
+      let oldest = null, oldestT = Infinity;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k.startsWith('kw-shelf') || k === key) continue;
+        const t = (ctx.persist.get(k, {}) || {}).t || 0;
+        if (t < oldestT) { oldestT = t; oldest = k; }
+      }
+      if (!oldest) return;
+      localStorage.removeItem(oldest);
+    }
+  }
+
   async function loadLive(sec) {
     const kr = ctx.kr;
     if (!kr.online || !kr.configured || !kr.locationId) return null;
-    const ck = `kw-shelf:${kr.locationId}:${sec.id}`;
+    const ck = `kw-shelf2:${kr.locationId}:${sec.id}`;
     const cached = ctx.persist.get(ck, null);
     if (cached && Date.now() - cached.t < 12 * 3600e3) return cached.products;
     const terms = termsFor(sec);
-    const per = Math.floor(48 / terms.length);
     const lists = await Promise.all(terms.map(t =>
-      ctx.api(`/api/products?limit=${per}&term=${encodeURIComponent(t)}`).then(r => r.products).catch(() => [])));
+      ctx.api(`/api/products?limit=${PER_TERM}&term=${encodeURIComponent(t)}`).then(r => r.products).catch(() => [])));
     const seen = new Set(), products = [];
     for (const list of lists) for (const p of list) if (p.upc && !seen.has(p.upc)) { seen.add(p.upc); products.push(p); }
     if (!products.length) return null;
     // real planogram order where Kroger knows it: bay, top shelf first, then position on the shelf
     const n = v => parseInt(v, 10) || 0;
     products.sort((a, b) => (!!b.loc - !!a.loc) || (a.loc && b.loc && (n(a.loc.bay) - n(b.loc.bay) || n(b.loc.shelf) - n(a.loc.shelf) || n(a.loc.pos) - n(b.loc.pos))) || 0);
-    ctx.persist.set(ck, { t: Date.now(), products });
+    saveShelf(ck, { t: Date.now(), products });
     return products;
   }
 
