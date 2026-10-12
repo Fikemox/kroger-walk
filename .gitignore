@@ -1,0 +1,4 @@
+# Kroger client secret and login tokens — never commit
+kroger_config.json
+kroger_tokens.json
+__pycache__/
