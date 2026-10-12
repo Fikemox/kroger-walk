@@ -2,8 +2,25 @@ name = "kroger-walk"
 main = "src/worker.js"
 compatibility_date = "2026-09-01"
 
-# the game itself; anything that isn't an asset (/api/*, /auth/*, /callback) goes to the Worker
-assets = { directory = "public", binding = "ASSETS" }
+# the game itself; anything that isn't an asset (/api/*, /auth/*, /callback) goes to the Worker.
+# run_worker_first so the password gate covers the game files too
+assets = { directory = "public", binding = "ASSETS", run_worker_first = true }
+
+# grocerywalk.com is the only public address (www redirects to it in the Worker)
+workers_dev = false
+routes = [
+  { pattern = "grocerywalk.com", custom_domain = true },
+  { pattern = "www.grocerywalk.com", custom_domain = true },
+]
+
+# counts calls to Kroger against the shared daily limits
+[[durable_objects.bindings]]
+name = "QUOTA"
+class_name = "Quota"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Quota"]
 
 [dev]
 # matches the http://localhost:8642/callback redirect URI registered on the Kroger app

@@ -43,9 +43,9 @@ function addLog(msg) {
   if (logLines.length > 4) logLines.shift();
   $('log').innerHTML = logLines.map(l => `<div>${esc(l)}</div>`).join('');
 }
-function toast(msg) {
+function toast(msg, ms = 1400) {
   const t = $('toast'); t.textContent = msg; t.classList.add('on');
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('on'), 1400);
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('on'), ms);
 }
 
 // ---------- NPCs ----------
@@ -569,7 +569,7 @@ function openCheckout() {
     <div class="ttl"><span>╡ Checkout ╞</span><span style="color:var(--dim)">lane ${lane}</span></div>
     <div class="pad"><pre class="receipt">${esc(out.join('\n'))}</pre></div>
     <div class="pad btns">${kr.online ? '<button id="rcKroger" style="border-color:var(--blue);color:#fff">Send to my Kroger cart (K)</button>' : ''}<button id="rcCopy">Copy list (C)</button><button id="rcDl">Download .txt (D)</button><button id="rcClose">Keep shopping (Esc)</button></div>
-    <div class="foot">${kr.online ? '<b>K</b> matches each item to a real product at your store and adds it to your Kroger pickup cart.' : 'Run <b>python server.py</b> to send this straight to your Kroger cart. Or use the <b>↗</b> links.'}</div>`, '#ffd84a');
+    <div class="foot">${kr.online ? '<b>K</b> matches each item to a real product at your store and adds it to your Kroger pickup cart.' : 'The Kroger connection is offline right now. Use the <b>↗</b> links.'}</div>`, '#ffd84a');
   if ($('rcKroger')) $('rcKroger').onclick = openMatch;
   $('rcCopy').onclick = copyList; $('rcDl').onclick = downloadList; $('rcClose').onclick = closeModal;
 }
@@ -665,32 +665,63 @@ function loop(now) {
 }
 
 // ---------- Kroger: real store, real cart ----------
-const kr = { online: false, configured: false, loggedIn: false, locationId: '', locationName: '' };
+const kr = { online: false, configured: false, loggedIn: false, locationId: '', locationName: '', quota: null };
 async function api(path, body) {
   const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
   const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && j.gate) location.reload();  // password cookie expired or changed
+  if (j.quotaOut) {
+    if (kr.quota && kr.quota[j.quotaOut]) kr.quota[j.quotaOut].left = 0;
+    drawKrChip();
+    if (!api.warned) { api.warned = true; toast(j.error + ' Shelves show sample items until then.', 6000); }
+  }
   if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), j);
+  // these spend the shared Kroger budget; refresh the counter shortly after
+  if (/^\/api\/(products|locations|cart)/.test(path)) { clearTimeout(api.t); api.t = setTimeout(refreshKroger, 2500); }
   return j;
 }
 async function refreshKroger() {
   try { Object.assign(kr, await api('/api/status'), { online: true }); } catch { kr.online = false; }
+  drawKrChip();
+}
+// shared daily Kroger budget: product searches are what friends actually burn through
+function quotaText() {
+  const q = kr.quota && kr.quota.products;
+  if (!q) return '';
+  const pct = q.left / q.limit;
+  const color = !q.left ? 'var(--red)' : pct < 0.2 ? 'var(--yellow)' : 'var(--dim)';
+  return ` · <span style="color:${color}">${q.left ? `${q.left.toLocaleString()} searches left` : 'out of searches today'}</span>`;
+}
+function drawKrChip() {
   const el = $('krChip');
   el.hidden = !kr.online;
   el.innerHTML = !kr.configured ? '⚠ Kroger: not set up'
-    : `🏪 ${kr.locationName ? esc(kr.locationName) : 'pick a store'} · ${kr.loggedIn ? '<span style="color:var(--green)">signed in</span>' : 'not signed in'}`;
+    : `🏪 ${kr.locationName ? esc(kr.locationName) : 'pick a store'} · ${kr.loggedIn ? '<span style="color:var(--green)">signed in</span>' : 'not signed in'}${quotaText()}`;
+  const q = kr.quota;
+  if (q) {
+    const reset = new Date(); reset.setUTCHours(24, 0, 0, 0);
+    el.title = `Everyone playing shares one Kroger app's daily limits (approximate):
+`
+      + `  product searches  ${q.products.left.toLocaleString()} / ${q.products.limit.toLocaleString()} left
+`
+      + `  store lookups     ${q.locations.left.toLocaleString()} / ${q.locations.limit.toLocaleString()} left
+`
+      + `  cart sends        ${q.cart.left.toLocaleString()} / ${q.cart.limit.toLocaleString()} left
+`
+      + `Resets around ${reset.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} your time. Shelves you've seen are cached for 12h and cost nothing to revisit.`;
+  }
 }
 $('krChip').onclick = () => openKroger();
 
 function openKroger() {
-  if (!kr.online) return toast('Start the game with: python server.py');
+  if (!kr.online) return toast('Cannot reach the Kroger connection. Try reloading.', 3000);
   mode = 'kroger';
   const setup = `<div class="help">To connect your real Kroger account (one-time, ~5 min):
     <ol>
       <li>Go to <a href="https://developer.kroger.com" target="_blank">developer.kroger.com</a>, sign in, and <b>create an app</b>.</li>
       <li>Use the <b>Production</b> environment, enable the <b>Products</b>, <b>Cart</b>, <b>Locations</b> and <b>Identity/Profile</b> APIs.</li>
-      <li>Set the redirect URI to <code>http://localhost:8642/callback</code></li>
-      <li>Paste the client ID &amp; secret into <code>kroger_config.json</code> in the game folder.</li>
-      <li>Restart <code>python server.py</code> and reload this page.</li>
+      <li>Add the redirect URI <code>${esc(location.origin)}/callback</code></li>
+      <li>Put the client ID &amp; secret in <code>.dev.vars</code> (local) or <code>wrangler secret put</code> (deployed), then reload.</li>
     </ol></div>`;
   const ready = `
     <div class="pad">Store: ${kr.locationName ? `<b>${esc(kr.locationName)}</b>` : '<span style="color:var(--dim)">none yet, so look one up</span>'}</div>
@@ -738,7 +769,7 @@ const realPrice = c => (c.promo && c.promo < c.price ? c.promo : c.price) || 0;
 const toSend = e => Math.max(0, Math.ceil(e.qty) - (e.sentQty || 0));
 
 async function openMatch() {
-  if (!kr.online) return toast('Start the game with: python server.py');
+  if (!kr.online) return toast('Cannot reach the Kroger connection. Try reloading.', 3000);
   if (!kr.configured || !kr.locationId) { addLog('Pick your Kroger store first.'); return openKroger(); }
   const entries = grouped().flatMap(([, items]) => items);
   if (!entries.length) return toast('Cart is empty');

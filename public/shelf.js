@@ -297,7 +297,8 @@ function createFirstPerson(ctx) {
     text(g, W - bayTxt.length - 2, 0, bayTxt, '#ffd84a');
     const status = seg.loading ? 'stocking shelves from your Kroger store...'
       : seg.live ? `live: ${ctx.kr.locationName} (${seg.products.length} products)`
-      : ctx.kr.configured && ctx.kr.locationId ? 'game catalog (store had no matches)' : 'game catalog. Connect Kroger (K) to see your store\'s real shelves';
+      : ctx.kr.quota && !ctx.kr.quota.products.left ? 'game catalog (Kroger searches used up for today)'
+        : ctx.kr.configured && ctx.kr.locationId ? 'game catalog (store had no matches)' : 'game catalog. Connect Kroger (K) to see your store\'s real shelves';
     text(g, 2, 1, status, seg.live ? '#8be36f' : DIM);
 
     // shelving unit

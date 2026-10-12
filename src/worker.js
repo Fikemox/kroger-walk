@@ -4,15 +4,26 @@
 // HttpOnly cookie, so the server stores no user data. The client secret is a Worker
 // secret and never reaches the browser.
 //
+// Everyone shares one Kroger app, and so its daily rate limits. The Quota Durable Object
+// counts real calls to Kroger, and product and store searches are cached at the edge so
+// friends browsing the same store mostly reuse each other's results.
+//
 // Secrets (wrangler secret put, or .dev.vars for local dev):
 //   KROGER_CLIENT_ID, KROGER_CLIENT_SECRET, SESSION_KEY (32+ random chars)
+//   SITE_PASSWORD (optional): the shared password friends type once to get in
+import { DurableObject } from 'cloudflare:workers';
 
 const API = 'https://api.kroger.com/v1';
 const USER_SCOPES = 'product.compact cart.basic:write profile.compact';
 const SESSION_COOKIE = 'kw_session';
 const STATE_COOKIE = 'kw_state';
+const GATE_COOKIE = 'kw_gate';
 const SESSION_DAYS = 180;
 const IMG_SIZES = new Set(['thumbnail', 'small', 'medium', 'large', 'xlarge']);
+// developer.kroger.com public API limits, per app per day
+const LIMITS = { products: 10000, locations: 1600, cart: 5000 };
+const EDGE_TTL = { products: 6 * 3600, locations: 7 * 86400 };
+const GATE_TRIES = 10;  // wrong passwords allowed per IP per 15 minutes
 
 class ApiError extends Error {
   constructor(status, body) { super(`${status}: ${body.slice(0, 300)}`); this.status = status; this.body = body; }
@@ -116,6 +127,136 @@ function simplifyProduct(p) {
   };
 }
 
+// ---- shared daily quota ----
+// One Durable Object counts every call the Worker makes to Kroger, per UTC day.
+export class Quota extends DurableObject {
+  today() { return new Date().toISOString().slice(0, 10); }
+
+  async counts() {
+    const day = this.today();
+    if (this.day !== day) {
+      // new day: forget yesterday's counts and lockouts
+      const old = [...(await this.ctx.storage.list()).keys()].filter(k => !k.startsWith(day));
+      if (old.length) await this.ctx.storage.delete(old);
+      this.day = day;
+    }
+    const out = {};
+    for (const api of Object.keys(LIMITS)) {
+      const used = (await this.ctx.storage.get(`${day}:${api}`)) || 0;
+      const spent = !!(await this.ctx.storage.get(`${day}:${api}:out`));
+      out[api] = { used, limit: LIMITS[api], left: spent ? 0 : Math.max(0, LIMITS[api] - used) };
+    }
+    return out;
+  }
+
+  // take one call from the budget; false once it's gone
+  async reserve(api) {
+    const c = await this.counts();
+    if (!c[api].left) return false;
+    await this.ctx.storage.put(`${this.today()}:${api}`, c[api].used + 1);
+    return true;
+  }
+
+  // Kroger said 429: trust that over our count until tomorrow
+  async exhaust(api) { await this.ctx.storage.put(`${this.today()}:${api}:out`, true); }
+
+  // wrong-password throttle, per IP per 15-minute window
+  async gateFail(ip) {
+    const k = `${this.today()}:gate:${ip}:${Math.floor(Date.now() / 900e3)}`;
+    const n = ((await this.ctx.storage.get(k)) || 0) + 1;
+    await this.ctx.storage.put(k, n);
+    return n;
+  }
+  async gateTries(ip) {
+    return (await this.ctx.storage.get(`${this.today()}:gate:${ip}:${Math.floor(Date.now() / 900e3)}`)) || 0;
+  }
+}
+
+const quota = env => env.QUOTA.get(env.QUOTA.idFromName('kroger'));
+
+class QuotaError extends Error {}
+
+// a Kroger call that counts against the shared budget, with an edge cache in front
+async function budgeted(env, api, cacheKey, ttl, call) {
+  const cache = caches.default;
+  const key = new Request(`https://kroger-walk.cache/${api}?${cacheKey}`);
+  const hit = await cache.match(key);
+  if (hit) return hit.json();
+  if (!(await quota(env).reserve(api))) throw new QuotaError(api);
+  let data;
+  try {
+    data = await call();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 429) { await quota(env).exhaust(api); throw new QuotaError(api); }
+    throw e;
+  }
+  await cache.put(key, new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json', 'Cache-Control': `public, max-age=${ttl}` } }));
+  return data;
+}
+
+// ---- shared-password gate ----
+async function gateToken(env) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  // changing SITE_PASSWORD changes the token, which locks out everyone until they type the new one
+  return b64u(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('gate:' + env.SITE_PASSWORD)))).slice(0, 32);
+}
+
+function sameString(a, b) {
+  const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] || 0) ^ (y[i] || 0);
+  return diff === 0;
+}
+
+const gatePage = (msg = '') => new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Kroger Walk</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b0d13; color: #c9d4ea;
+         font: 16px Consolas, 'Cascadia Mono', 'Courier New', monospace; }
+  form { border: 1px solid #2a3246; background: #11151f; padding: 28px 32px; width: min(360px, calc(100vw - 32px)); box-sizing: border-box; }
+  .logo { color: #fff; background: #2f7df6; padding: 0 8px; font-weight: bold; letter-spacing: 2px; }
+  pre { color: #ffd84a; margin: 18px 0; line-height: 1.15; }
+  input, button { font: inherit; width: 100%; box-sizing: border-box; padding: 8px 10px; margin-top: 10px;
+                  background: #0b0d13; color: #c9d4ea; border: 1px solid #2a3246; }
+  button { background: #2f7df6; color: #fff; border-color: #2f7df6; cursor: pointer; }
+  .msg { color: #ff6b6b; min-height: 1.2em; margin-top: 10px; font-size: 14px; }
+  .dim { color: #6b7690; font-size: 14px; }
+</style></head><body>
+<form method="post" action="/gate">
+  <div><span class="logo">KROGER</span> WALK</div>
+  <pre>  ___________
+ |  |  |  |  |
+ |__|__|__|__|
+  \\_________/
+    o     o</pre>
+  <div class="dim">Friends only. What's the password?</div>
+  <input type="password" name="password" autocomplete="current-password" autofocus required>
+  <button>Walk in</button>
+  <div class="msg">${msg}</div>
+</form></body></html>`, { status: 401, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+
+async function gate(req, env, url) {
+  if (!env.SITE_PASSWORD) {
+    // no password: fine for local dev, but never leave the real site open by accident
+    return url.hostname === 'localhost' ? null : new Response('SITE_PASSWORD is not set.', { status: 503 });
+  }
+  const ok = sameString(cookies(req)[GATE_COOKIE] || '', await gateToken(env));
+  if (req.method === 'POST' && url.pathname === '/gate') {
+    if (ok) return redirect('/');
+    const ip = req.headers.get('CF-Connecting-IP') || 'local';
+    if ((await quota(env).gateTries(ip)) >= GATE_TRIES) return gatePage('Too many tries. Wait 15 minutes.');
+    const form = await req.formData().catch(() => null);
+    if (!form || !sameString(String(form.get('password') || ''), env.SITE_PASSWORD)) {
+      await quota(env).gateFail(ip);
+      return gatePage('Nope, try again.');
+    }
+    return redirect('/', { 'Set-Cookie': cookie(url, GATE_COOKIE, await gateToken(env), 365 * 86400) });
+  }
+  if (ok || url.pathname === '/favicon.svg') return null;
+  return url.pathname.startsWith('/api/') ? json({ error: 'Password required', gate: true }, 401) : gatePage();
+}
+
 // ---- routes ----
 // ctx.session is the decrypted cookie ({} if none); set ctx.dirty to write it back
 const routes = {
@@ -124,6 +265,7 @@ const routes = {
     loggedIn: !!ctx.session.rt,
     locationId: ctx.session.loc || '',
     locationName: ctx.session.locName || '',
+    quota: await quota(env).counts(),
   }),
 
   'GET /auth/login': async (req, env, ctx) => {
@@ -158,12 +300,16 @@ const routes = {
   },
 
   'GET /api/locations': async (req, env, ctx) => {
-    const zip = (ctx.url.searchParams.get('zip') || '').slice(0, 10);
-    const res = await apiGet('/locations', { 'filter.zipCode.near': zip, 'filter.limit': 10, 'filter.radiusInMiles': 25 }, await getAppToken(env));
-    return json({ locations: (res.data || []).map(l => {
-      const a = l.address || {};
-      return { id: l.locationId, name: l.name || '', chain: l.chain || '', address: `${a.addressLine1 || ''}, ${a.city || ''} ${a.zipCode || ''}` };
-    }) });
+    const zip = (ctx.url.searchParams.get('zip') || '').replace(/[^\d-]/g, '').slice(0, 10);
+    if (zip.length < 5) return json({ locations: [] });
+    const locations = await budgeted(env, 'locations', `zip=${zip}`, EDGE_TTL.locations, async () => {
+      const res = await apiGet('/locations', { 'filter.zipCode.near': zip, 'filter.limit': 10, 'filter.radiusInMiles': 25 }, await getAppToken(env));
+      return (res.data || []).map(l => {
+        const a = l.address || {};
+        return { id: l.locationId, name: l.name || '', chain: l.chain || '', address: `${a.addressLine1 || ''}, ${a.city || ''} ${a.zipCode || ''}` };
+      });
+    });
+    return json({ locations });
   },
 
   'POST /api/location': async (req, env, ctx) => {
@@ -178,10 +324,11 @@ const routes = {
     const q = ctx.url.searchParams;
     const term = (q.get('term') || '').split(/\s+/).filter(Boolean).slice(0, 8).join(' ');
     if (term.length < 3) return json({ products: [] });
-    const params = { 'filter.term': term, 'filter.limit': Math.max(1, Math.min(50, parseInt(q.get('limit')) || 6)) };
+    const params = { 'filter.term': term.toLowerCase(), 'filter.limit': Math.max(1, Math.min(50, parseInt(q.get('limit')) || 6)) };
     if (ctx.session.loc) params['filter.locationId'] = ctx.session.loc;
-    const res = await apiGet('/products', params, await getAppToken(env));
-    return json({ products: (res.data || []).map(simplifyProduct) });
+    const products = await budgeted(env, 'products', new URLSearchParams(params).toString(), EDGE_TTL.products, async () =>
+      ((await apiGet('/products', params, await getAppToken(env))).data || []).map(simplifyProduct));
+    return json({ products });
   },
 
   'GET /api/img': async (req, env, ctx) => {
@@ -204,7 +351,13 @@ const routes = {
     const items = (body.items || []).filter(i => i && i.upc).slice(0, 200)
       .map(i => ({ upc: String(i.upc), quantity: Math.max(1, Math.min(99, parseInt(i.quantity) || 1)), modality: 'PICKUP' }));
     if (!items.length) return json({ error: 'Nothing to add' }, 400);
-    await http('PUT', API + '/cart/add', { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, JSON.stringify({ items }));
+    if (!(await quota(env).reserve('cart'))) throw new QuotaError('cart');
+    try {
+      await http('PUT', API + '/cart/add', { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, JSON.stringify({ items }));
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 429) { await quota(env).exhaust('cart'); throw new QuotaError('cart'); }
+      throw e;
+    }
     return json({ ok: true, added: items.length });
   },
 };
@@ -234,6 +387,14 @@ export default {
       url.hostname = 'localhost';
       return redirect(url.toString());
     }
+    if (url.hostname !== 'localhost' && (url.hostname.startsWith('www.') || url.protocol === 'http:')) {
+      // one https origin, so cookies, the cart and the OAuth redirect all line up
+      url.hostname = url.hostname.replace(/^www\./, '');
+      url.protocol = 'https:';
+      return Response.redirect(url.toString(), 301);
+    }
+    const locked = await gate(req, env, url);
+    if (locked) return locked;
     const route = routes[`${req.method} ${url.pathname}`];
     if (!route) return env.ASSETS.fetch(req);
 
@@ -244,9 +405,11 @@ export default {
     try {
       res = await route(req, env, ctx);
     } catch (e) {
-      res = e instanceof ApiError
-        ? json({ error: `Kroger API error ${e.status}`, detail: e.body.slice(0, 500) }, 502)
-        : json({ error: String(e.message || e) }, 500);
+      res = e instanceof QuotaError
+        ? json({ error: `Kroger's daily ${e.message} limit is used up for everyone. It resets around midnight UTC.`, quotaOut: e.message }, 429)
+        : e instanceof ApiError
+          ? json({ error: `Kroger API error ${e.status}`, detail: e.body.slice(0, 500) }, 502)
+          : json({ error: String(e.message || e) }, 500);
     }
     if (ctx.dirty) {
       res = new Response(res.body, res);
