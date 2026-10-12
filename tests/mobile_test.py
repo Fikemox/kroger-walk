@@ -34,7 +34,7 @@ async def main():
         errs = []
         pg.on('pageerror', lambda e: errs.append(str(e)))
         await pg.goto('http://localhost:8642/')
-        await pg.fill('input[name=password]', 'localtest-pw')
+        await pg.fill('input[name=name]', 'Tester'); await pg.fill('input[name=password]', 'localtest-pw')
         await pg.tap('button')
         await pg.wait_for_timeout(1000)
         await pg.evaluate("fetch('/api/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'01400925',name:'Kroger Springboro'})})")

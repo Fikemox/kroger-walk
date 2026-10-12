@@ -22,7 +22,7 @@ async def main():
         pg.on('pageerror', lambda e: errs.append(str(e)))
         await pg.goto(BASE)
         if await pg.query_selector('input[name=password]'):
-            await pg.fill('input[name=password]', PW); await pg.click('button'); await pg.wait_for_timeout(1000)
+            await pg.fill('input[name=name]', 'Tester'); await pg.fill('input[name=password]', PW); await pg.click('button'); await pg.wait_for_timeout(1000)
         await pg.evaluate("fetch('/api/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'01400925',name:'Kroger Springboro'})})")
         await pg.evaluate("localStorage.clear(); localStorage.setItem('kw-seen-help','true'); localStorage.setItem('kw-cart','{}')")
         await pg.reload(); await pg.wait_for_timeout(1500)

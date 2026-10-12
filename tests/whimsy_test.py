@@ -12,7 +12,7 @@ async def m():
         pg.on('pageerror', lambda e: errs.append(str(e)))
         await pg.goto('http://localhost:8642/')
         if await pg.query_selector('input[name=password]'):
-            await pg.fill('input[name=password]', 'localtest-pw'); await pg.click('button'); await pg.wait_for_timeout(800)
+            await pg.fill('input[name=name]', 'Tester'); await pg.fill('input[name=password]', 'localtest-pw'); await pg.click('button'); await pg.wait_for_timeout(800)
         await pg.evaluate("fetch('/api/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'01400925',name:'Kroger Springboro'})})")
         await pg.evaluate("localStorage.clear(); localStorage.setItem('kw-seen-help','true'); localStorage.setItem('kw-cart', JSON.stringify({'kr:1': {key:'kr:1', name:'Kraft Mac & Cheese Original (7.25 oz)', price: 1.29, sec:'pasta', qty: 2}}))")
         await pg.reload(); await pg.wait_for_timeout(1500)

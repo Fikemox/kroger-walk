@@ -112,7 +112,9 @@ function socialize() {
     const d = Math.abs(n.x - player.x) + Math.abs(n.y - player.y);
     if (n.staff && d <= 1 && now - lastTalk > 9000) { lastTalk = now; addLog(`Associate: "${TIPS[rnd(TIPS.length)]}"`); }
     if (!n.staff && d === 0 && now - lastBump > 4000) {
-      lastBump = now; addLog(['"Oh — excuse me!"', '"Sorry, go ahead."', 'You squeeze past a shopper.', '"Are you in line?"'][rnd(4)]);
+      lastBump = now;
+      addLog(n.who ? `${n.who}: ${['"Oh — excuse me!"', '"Sorry, go ahead."', '"Fancy meeting you here."', '"Are you in line?"'][rnd(4)]}`
+        : ['"Oh — excuse me!"', '"Sorry, go ahead."', 'You squeeze past a shopper.', '"Are you in line?"'][rnd(4)]);
     }
   }
 }
@@ -720,7 +722,7 @@ function loop(now) {
 }
 
 // ---------- Kroger: real store, real cart ----------
-const kr = { online: false, configured: false, loggedIn: false, locationId: '', locationName: '', quota: null };
+const kr = { online: false, configured: false, loggedIn: false, locationId: '', locationName: '', quota: null, me: null, buildLeft: true };
 async function api(path, body) {
   const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
   const j = await r.json().catch(() => ({}));
@@ -786,9 +788,17 @@ function openKroger() {
     <div class="pad btns">${kr.loggedIn
       ? '<span style="color:var(--green);align-self:center">✓ signed in to Kroger</span><button id="krOut">Sign out</button>'
       : '<button id="krIn" style="border-color:var(--blue);color:#fff">Sign in to Kroger</button>'}<button id="krClose">Close (Esc)</button></div>`;
-  openModal(`<div class="ttl"><span>╡ Kroger account ╞</span></div>${kr.configured ? ready : setup}
+  const meRow = kr.me ? `<div class="pad btns" id="meRow" style="align-items:center"><span>Playing as <b>${esc(kr.me.name)}</b>
+      <span style="color:var(--dim)">(${esc(kr.me.group)})</span></span><button id="forget">Forget me</button></div>` : '';
+  openModal(`<div class="ttl"><span>╡ Kroger account ╞</span></div>${kr.configured ? ready : setup}${meRow}
     <div class="foot">Your store sets real prices, aisles &amp; stock. Signing in lets the game add to your real pickup cart.
     The API can't check out, so you'll still pick a time &amp; pay in the Kroger app.</div>`, '#2f7df6');
+  if ($('forget')) $('forget').onclick = () => {
+    $('meRow').innerHTML = `<span>Take <b>${esc(kr.me.name)}</b> off everyone's shoppers and sign this device out of the game?</span>
+      <button id="forgetYes" style="border-color:var(--red);color:#fff">Yes, forget me</button><button id="forgetNo">Never mind</button>`;
+    $('forgetNo').onclick = () => openKroger();
+    $('forgetYes').onclick = async () => { await fetch('/api/forget', { method: 'POST' }).catch(() => {}); location.reload(); };
+  };
   if (!kr.configured) return;
   $('krClose').onclick = closeModal;
   if ($('krIn')) $('krIn').onclick = () => { location.href = '/auth/login'; };
@@ -861,13 +871,16 @@ function confirmBuild() {
     <div class="help">This searches your store for about <b>${STORE_TERMS.length}</b> kinds of products, notes the aisle, side and shelf
       Kroger lists for each, and builds a walkable map of this store with its real aisles.<br><br>
       It uses up to <b>${STORE_TERMS.length}</b> of today's shared Kroger searches${left != null ? ` (<b>${left.toLocaleString()}</b> left today)` : ''}
-      and takes about a minute. The map is saved for everyone who shops this store, so it only has to be built once.<br>
+      and takes about a minute. Everyone gets one build a day (it resets at midnight Eastern); cancelling gives it back. The map is saved for everyone who shops this store, so it only has to be built once.<br>
       <span style="color:var(--dim)">Kroger doesn't publish floor plans, so aisles run left to right by number and the departments around the edge
       follow a standard Kroger layout. What's in each aisle, and on which side, is real.</span></div>
     <div class="pad btns"><button id="bdGo" style="border-color:var(--yellow);color:#fff">Build it</button><button id="bdNo">Cancel</button></div>`, '#ffd84a');
   $('bdNo').onclick = () => openKroger();
   $('bdGo').onclick = buildStoreMap;
-  if (left != null && left < STORE_TERMS.length) {
+  if (!kr.buildLeft) {
+    $('bdGo').disabled = true;
+    $('bdGo').textContent = 'You\'ve built a map today. Next one at midnight Eastern';
+  } else if (left != null && left < STORE_TERMS.length) {
     $('bdGo').disabled = true;
     $('bdGo').textContent = 'Not enough searches left today';
   }
@@ -876,11 +889,17 @@ function confirmBuild() {
 async function buildStoreMap() {
   const job = { stop: false };
   const loc = kr.locationId, name = kr.locationName;
+  try { await api('/api/build', {}); } catch (err) {
+    if (err.buildUsed) kr.buildLeft = false;
+    $('bdGo').disabled = true; $('bdGo').textContent = err.message;
+    return;
+  }
+  const giveBack = () => api('/api/build', { end: true }).catch(() => {});
   openModal(`<div class="ttl"><span>╡ Mapping ${esc(name)} ╞</span><span id="bdPct" style="color:var(--dim)">0%</span></div>
     <div class="pad"><pre id="bdBar" style="margin:0;color:var(--yellow)"></pre></div>
     <div class="pad" id="bdMsg" style="color:var(--dim)">walking the aisles…</div>
     <div class="pad btns"><button id="bdStop">Cancel</button></div>`, '#ffd84a');
-  $('bdStop').onclick = () => { job.stop = true; openKroger(); };
+  $('bdStop').onclick = () => { if (!job.stop) { job.stop = true; giveBack(); } openKroger(); };
   const found = new Map();
   let done = 0, failed = 0, quotaOut = false, next = 0;
   const show = () => {
@@ -904,6 +923,7 @@ async function buildStoreMap() {
   await Promise.all(Array.from({ length: 6 }, worker));
   if (job.stop) return;
   if (quotaOut || found.size < 200) {
+    giveBack();
     $('bdMsg').innerHTML = `<span style="color:var(--red)">${quotaOut ? 'Kroger searches ran out for today' : 'Too few products came back'}, so no map was saved.</span>`;
     $('bdStop').textContent = 'Close';
     return;
@@ -913,6 +933,7 @@ async function buildStoreMap() {
   try {
     await api('/api/layout', { layout });
   } catch (err) {
+    if (!err.buildUsed) giveBack();
     $('bdMsg').innerHTML = `<span style="color:var(--red)">Couldn't save the map: ${esc(err.message)}</span>`;
     $('bdStop').textContent = 'Close';
     return;
@@ -1127,9 +1148,11 @@ function encounter(n) {
   lastEncounter = Date.now();
   held.clear(); repeating = false;
   mode = 'battle';
-  const foe = pick(FOES), aisle = 1 + rnd(11);
+  const foe = n.who ? n.who.toUpperCase() : pick(FOES), aisle = 1 + rnd(11);
   const quip = Object.keys(cart).length && Math.random() < 0.55 ? cartQuip() : pick(QUIPS);
-  battle = { n, foe, quip, lines: [`A wild ${foe} appeared!`, `${foe}: "${quip}"`, `${foe} ${pick(EXITS).replace('{aisle}', aisle)}`], i: -1, typing: null };
+  const lines = [`A wild ${foe} appeared!`, `${foe}: "${quip}"`, `${foe} ${pick(EXITS).replace('{aisle}', aisle)}`];
+  if (n.who) lines.splice(1, 0, `(${n.who} really was out shopping ${agoText(n.ago)}.)`);
+  battle = { n, foe, quip, lines, i: -1, typing: null };
   const el = $('battle');
   el.innerHTML = `<div class="b-flash"></div><div class="b-bars">${'<i></i>'.repeat(10)}</div>
     <div class="b-scene">
@@ -1184,6 +1207,25 @@ function battleKey(e, k) {
   if (k === 'Escape') { if (battle.typing) { clearInterval(battle.typing); battle.typing = null; } return endBattle(); }
   if (['Enter', ' ', 'e', 'a'].includes(k)) nextLine();
 }
+
+// ---------- whimsy: real players ----------
+// Everyone who's played in the last 24 hours lends their name to a shopper, in every store and
+// on every layout. Names only: nobody's cart ever leaves their own browser.
+const agoText = m => (m < 2 ? 'just now' : m < 60 ? `${m} minutes ago` : m < 120 ? 'an hour ago' : `${Math.round(m / 60)} hours ago`);
+let players = [];
+function namePlayers(list) {
+  players = list;
+  const named = new Map(players.map(p => [p.name, p]));
+  const shoppers = npcs.filter(n => !n.staff);
+  // keep names on the shoppers already wearing them, then hand out the rest
+  for (const n of shoppers) { if (n.who && named.has(n.who)) { n.ago = named.get(n.who).ago; named.delete(n.who); } else delete n.who; }
+  const left = [...named.values()];
+  for (const n of shoppers) if (!n.who && left.length) { const p = left.splice(rnd(left.length), 1)[0]; n.who = p.name; n.ago = p.ago; }
+}
+async function hello() {
+  try { const r = await api('/api/hello', {}); kr.me = r.me; namePlayers(r.players || []); } catch { /* offline: shoppers stay anonymous */ }
+}
+setInterval(() => { if (!document.hidden) hello(); }, 5 * 60e3);
 
 // ---------- whimsy: the wheel ----------
 // Once per browser hour (at most), the cart's wheel starts squeaking, drags, and locks up.
@@ -1445,6 +1487,7 @@ addLog('Press / to find anything, or just wander.');
 if (!persist.get('kw-seen-help', false)) { persist.set('kw-seen-help', true); openHelp(); }
 const krParam = new URLSearchParams(location.search).get('kroger');
 if (krParam) history.replaceState(null, '', location.pathname);
+hello();
 refreshKroger().then(() => {
   if (krParam === 'connected') { addLog('🔗 Signed in to Kroger.'); if (totals().n && mode === 'walk') openMatch(); }
   if (krParam === 'loginfailed') addLog('Kroger sign-in failed. Press K to try again.');
@@ -1452,5 +1495,5 @@ refreshKroger().then(() => {
   if (kr.configured && !kr.locationId && mode === 'walk') { addLog('Welcome! Pick your Kroger store to stock the shelves.'); openKroger(); }
 });
 requestAnimationFrame(loop);
-window.kw = { player, step, navigate, interact, openMatch, openCheckout, refreshKroger, kr, M, npcs, encounter, lockWheel, wheel, get path() { return path; }, get cam() { return cam; }, get mode() { return mode; } }; // console poking
+window.kw = { player, step, navigate, interact, openMatch, openCheckout, refreshKroger, kr, M, npcs, encounter, lockWheel, wheel, hello, namePlayers, get path() { return path; }, get cam() { return cam; }, get mode() { return mode; } }; // console poking
 })();

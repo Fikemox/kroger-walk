@@ -5,5 +5,8 @@ KROGER_CLIENT_SECRET=your-app-client-secret
 SESSION_KEY=replace-with-32-plus-random-characters
 # optional: shared password friends type once to get in (leave unset to skip the gate)
 SITE_PASSWORD=pick-something-friends-can-remember
+# optional: more groups, each with its own password (changing one signs out only that group)
+SITE_PASSWORD_FAMILY=another-password
+SITE_PASSWORD_WORK=and-another
 # local dev only (never set in production): wrangler dev rewrites requests to the production host
 DEV_ORIGIN=http://localhost:8642

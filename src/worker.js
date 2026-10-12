@@ -1,7 +1,7 @@
 // Kroger Walk on Cloudflare Workers: serves the game (public/) and proxies the Kroger API.
 //
 // Each player has their own Kroger login and store. Both live in an AES-GCM-encrypted,
-// HttpOnly cookie, so the server stores no user data. The client secret is a Worker
+// HttpOnly cookie. The server keeps only player names, for 24h. The client secret is a Worker
 // secret and never reaches the browser.
 //
 // Everyone shares one Kroger app, and so its daily rate limits. The Quota Durable Object
@@ -11,6 +11,8 @@
 // Secrets (wrangler secret put, or .dev.vars for local dev):
 //   KROGER_CLIENT_ID, KROGER_CLIENT_SECRET, SESSION_KEY (32+ random chars)
 //   SITE_PASSWORD (optional): the shared password friends type once to get in
+//   SITE_PASSWORD_FAMILY, SITE_PASSWORD_WORK (optional): more groups, each with its own password.
+//     Changing one group's password signs out only that group
 //   DEV_ORIGIN (.dev.vars only): http://localhost:8642. `wrangler dev` rewrites every request
 //     to the production hostname, so this is how the Worker knows it's local
 import { DurableObject } from 'cloudflare:workers';
@@ -26,6 +28,10 @@ const IMG_SIZES = new Set(['thumbnail', 'small', 'medium', 'large', 'xlarge']);
 const LIMITS = { products: 10000, locations: 1600, cart: 5000 };
 const EDGE_TTL = { products: 6 * 3600, locations: 7 * 86400 };
 const GATE_TRIES = 10;  // wrong passwords allowed per IP per 15 minutes
+// password groups: group -> the secret holding its password
+const GROUPS = { friends: 'SITE_PASSWORD', family: 'SITE_PASSWORD_FAMILY', work: 'SITE_PASSWORD_WORK' };
+const NAME_MAX = 16;
+const SEEN_MS = 24 * 3600e3;  // a player's name shows up on other people's shoppers for 24h
 
 class ApiError extends Error {
   constructor(status, body) { super(`${status}: ${body.slice(0, 300)}`); this.status = status; this.body = body; }
@@ -187,6 +193,42 @@ export class Quota extends DurableObject {
     return json;
   }
 
+  // ---- who's been shopping (kept in their own instance, see presence()) ----
+  async seen(name) {
+    await this.ctx.storage.put('seen:' + name.toLowerCase(), { name, t: Date.now() });
+  }
+  async recent() {
+    const cutoff = Date.now() - SEEN_MS, old = [], out = [];
+    for (const [k, v] of await this.ctx.storage.list({ prefix: 'seen:' })) {
+      if (v.t < cutoff) old.push(k); else out.push(v);
+    }
+    if (old.length) await this.ctx.storage.delete(old);
+    return out.sort((a, b) => b.t - a.t);
+  }
+  async forget(name) { await this.ctx.storage.delete('seen:' + name.toLowerCase()); }
+
+  // ---- one store-map build per person per day, Eastern midnight to midnight ----
+  // (not under the dated-key cleanup in counts(), which runs on UTC days)
+  async buildState(name) {
+    const day = easternDay(), key = `build:${day}:${name.toLowerCase()}`;
+    const stale = [...(await this.ctx.storage.list({ prefix: 'build:' })).keys()].filter(k => !k.startsWith(`build:${day}:`));
+    if (stale.length) await this.ctx.storage.delete(stale);
+    return { key, state: (await this.ctx.storage.get(key)) || '' };   // '' | 'building' | 'built'
+  }
+  async buildStart(name) {
+    const { key, state } = await this.buildState(name);
+    if (state) return false;
+    await this.ctx.storage.put(key, 'building');
+    return true;
+  }
+  async buildEnd(name, saved) {
+    const { key, state } = await this.buildState(name);
+    if (state !== 'building') return false;
+    if (saved) await this.ctx.storage.put(key, 'built');
+    else await this.ctx.storage.delete(key);  // cancelled or failed: they can try again today
+    return true;
+  }
+
   async gateTries(ip) {
     return (await this.ctx.storage.get(`${this.today()}:gate:${ip}:${Math.floor(Date.now() / 900e3)}`)) || 0;
   }
@@ -194,6 +236,8 @@ export class Quota extends DurableObject {
 
 const quota = env => env.QUOTA.get(env.QUOTA.idFromName('kroger'));
 const layouts = env => env.QUOTA.get(env.QUOTA.idFromName('layouts'));
+const presence = env => env.QUOTA.get(env.QUOTA.idFromName('presence'));
+const easternDay = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
 const MAX_LAYOUT = 8 * 1024 * 1024;
 
 class QuotaError extends Error {}
@@ -216,11 +260,23 @@ async function budgeted(env, api, cacheKey, ttl, call) {
   return data;
 }
 
-// ---- shared-password gate ----
-async function gateToken(env) {
+// ---- password gate ----
+// Each group has its own password. The gate cookie carries the group and the player's name,
+// signed with that group's password, so changing one group's password signs out only that
+// group. (Cookies from before names existed don't parse, which signed everyone out once.)
+async function gateSig(env, group, name) {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  // changing SITE_PASSWORD changes the token, which locks out everyone until they type the new one
-  return b64u(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('gate:' + env.SITE_PASSWORD)))).slice(0, 32);
+  const msg = `gate2|${group}|${env[GROUPS[group]]}|${name}`;
+  return b64u(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg)))).slice(0, 32);
+}
+const gateCookie = async (env, group, name) => `g2.${group}.${b64u(new TextEncoder().encode(name))}.${await gateSig(env, group, name)}`;
+
+async function readGate(env, raw) {
+  const [v, group, n, sig] = (raw || '').split('.');
+  if (v !== 'g2' || !Object.hasOwn(GROUPS, group) || !env[GROUPS[group]] || !n || !sig) return null;
+  let name;
+  try { name = new TextDecoder('utf-8', { fatal: true }).decode(unb64u(n)); } catch { return null; }
+  return sameString(sig, await gateSig(env, group, name)) ? { group, name } : null;
 }
 
 function sameString(a, b) {
@@ -230,7 +286,34 @@ function sameString(a, b) {
   return diff === 0;
 }
 
-const gatePage = (msg = '') => new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+// Names show up on other people's screens, so they're short and plain. Anything that smells
+// like markup or script gets turned away with a joke. (The game also only ever renders names
+// as text, so this is the belt to those suspenders.)
+const XSSY = /[<>"`\\{}=]|&#|%3[ce]|javascript:|vbscript:|data:|script|\bon[a-z]+\s*=|alert\s*\(|eval\s*\(|prompt\s*\(|document\.|window\.|\$\{/i;
+function checkName(raw) {
+  const name = String(raw || '').normalize('NFC').replace(/\s+/g, ' ').trim();
+  if (XSSY.test(name)) return { xss: true };
+  if (!name) return { error: 'Tell us who\'s shopping.' };
+  if ([...name].length > NAME_MAX) return { error: `Keep your name to ${NAME_MAX} characters.` };
+  if (!/^[\p{L}\p{N}][\p{L}\p{M}\p{N} .'_-]*$/u.test(name)) return { error: 'Letters, numbers, spaces and . \' - _ only.' };
+  return { name };
+}
+
+const escHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const CART_ART = `  ___________
+ |  |  |  |  |
+ |__|__|__|__|
+  \\_________/
+    o     o`;
+const COP_ART = `   _____
+  |_____|   WEE-OO
+  ( o_o)    WEE-OO
+  /|_|\\ ]=[]
+  / \\    o o`;
+
+// msg is always one of our own constant strings. The only input echoed back is the name,
+// escaped, and never after it looked like an attack.
+const gatePage = ({ msg = '', name = '', xss = false } = {}) => new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Kroger Walk</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
@@ -239,44 +322,54 @@ const gatePage = (msg = '') => new Response(`<!doctype html><html lang="en"><hea
   form { border: 1px solid #2a3246; background: #11151f; padding: 28px 32px; width: min(360px, calc(100vw - 32px)); box-sizing: border-box; }
   .logo { color: #fff; background: #2f7df6; padding: 0 8px; font-weight: bold; letter-spacing: 2px; }
   pre { color: #ffd84a; margin: 18px 0; line-height: 1.15; }
-  input, button { font: inherit; width: 100%; box-sizing: border-box; padding: 8px 10px; margin-top: 10px;
+  pre.cop { color: #ff6b6b; }
+  label { display: block; margin-top: 14px; font-size: 14px; color: #6b7690; }
+  input, button { font: inherit; width: 100%; box-sizing: border-box; padding: 8px 10px; margin-top: 6px;
                   background: #0b0d13; color: #c9d4ea; border: 1px solid #2a3246; }
-  button { background: #2f7df6; color: #fff; border-color: #2f7df6; cursor: pointer; }
+  button { background: #2f7df6; color: #fff; border-color: #2f7df6; cursor: pointer; margin-top: 16px; }
   .msg { color: #ff6b6b; min-height: 1.2em; margin-top: 10px; font-size: 14px; }
+  .xss { color: #ffd84a; border: 1px dashed #ff6b6b; padding: 8px 10px; line-height: 1.45; }
   .dim { color: #6b7690; font-size: 14px; }
 </style></head><body>
 <form method="post" action="/gate">
   <div><span class="logo">KROGER</span> WALK</div>
-  <pre>  ___________
- |  |  |  |  |
- |__|__|__|__|
-  \\_________/
-    o     o</pre>
-  <div class="dim">Friends only. What's the password?</div>
-  <input type="password" name="password" autocomplete="current-password" autofocus required>
+  <pre${xss ? ' class="cop"' : ''}>${xss ? COP_ART : CART_ART}</pre>
+  <div class="dim">Who's shopping? Your name pops up as a shopper in other players' stores for 24 hours.</div>
+  <label for="nm">Your name</label>
+  <input id="nm" name="name" maxlength="${NAME_MAX}" autocomplete="nickname" value="${xss ? '' : escHtml(name)}" ${name && !xss ? '' : 'autofocus '}required>
+  <label for="pw">Password</label>
+  <input id="pw" type="password" name="password" autocomplete="current-password" ${name && !xss ? 'autofocus ' : ''}required>
   <button>Walk in</button>
-  <div class="msg">${msg}</div>
+  <div class="msg">${xss
+    ? '<div class="xss">🚨 Security to the front, please. Security to the front.<br><br>Nice try, Little Bobby &lt;/script&gt;. That name has been bagged with the raw chicken and left in a hot car. Pick one a cashier could say out loud.</div>'
+    : msg}</div>
 </form></body></html>`, { status: 401, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 
+// { res } answers right away (the password page, a redirect); { who } carries on with the
+// player's { group, name }
 async function gate(req, env, url) {
   if (!env.SITE_PASSWORD) {
     // no password: fine for local dev, but never leave the real site open by accident
-    return env.DEV_ORIGIN ? null : new Response('SITE_PASSWORD is not set.', { status: 503 });
+    return env.DEV_ORIGIN ? { who: null } : { res: new Response('SITE_PASSWORD is not set.', { status: 503 }) };
   }
-  const ok = sameString(cookies(req)[GATE_COOKIE] || '', await gateToken(env));
+  const who = await readGate(env, cookies(req)[GATE_COOKIE]);
   if (req.method === 'POST' && url.pathname === '/gate') {
-    if (ok) return redirect('/');
+    if (who) return { res: redirect('/') };
     const ip = req.headers.get('CF-Connecting-IP') || 'local';
-    if ((await quota(env).gateTries(ip)) >= GATE_TRIES) return gatePage('Too many tries. Wait 15 minutes.');
+    if ((await quota(env).gateTries(ip)) >= GATE_TRIES) return { res: gatePage({ msg: 'Too many tries. Wait 15 minutes.' }) };
     const form = await req.formData().catch(() => null);
-    if (!form || !sameString(String(form.get('password') || ''), env.SITE_PASSWORD)) {
-      await quota(env).gateFail(ip);
-      return gatePage('Nope, try again.');
-    }
-    return redirect('/', { 'Set-Cookie': cookie(url, GATE_COOKIE, await gateToken(env), 365 * 86400) });
+    const n = checkName(form && form.get('name'));
+    if (n.xss) { await quota(env).gateFail(ip); return { res: gatePage({ xss: true }) }; }
+    const pw = String((form && form.get('password')) || '');
+    const group = Object.keys(GROUPS).find(g => env[GROUPS[g]] && sameString(pw, env[GROUPS[g]]));
+    if (!group) { await quota(env).gateFail(ip); return { res: gatePage({ msg: 'Nope, try again.', name: n.name || '' }) }; }
+    if (n.error) return { res: gatePage({ msg: n.error }) };
+    await presence(env).seen(n.name);
+    return { res: redirect('/', { 'Set-Cookie': cookie(url, GATE_COOKIE, await gateCookie(env, group, n.name), 365 * 86400) }) };
   }
-  if (ok || url.pathname === '/favicon.svg') return null;
-  return url.pathname.startsWith('/api/') ? json({ error: 'Password required', gate: true }, 401) : gatePage();
+  if (who) return { who };
+  if (url.pathname === '/favicon.svg') return { who: null };
+  return { res: url.pathname.startsWith('/api/') ? json({ error: 'Password required', gate: true }, 401) : gatePage() };
 }
 
 // ---- routes ----
@@ -288,7 +381,37 @@ const routes = {
     locationId: ctx.session.loc || '',
     locationName: ctx.session.locName || '',
     quota: await quota(env).counts(),
+    me: ctx.who && { name: ctx.who.name, group: ctx.who.group },
+    buildLeft: !(await quota(env).buildState(buildName(ctx))).state,
   }),
+
+  // the game says hello when it loads and every few minutes: keeps your name on other people's
+  // shoppers, and returns everyone else seen in the last 24 hours. Names only, never carts.
+  'POST /api/hello': async (req, env, ctx) => {
+    if (!ctx.who) return json({ me: null, players: [] });
+    await presence(env).seen(ctx.who.name);
+    const me = ctx.who.name.toLowerCase(), now = Date.now();
+    const players = (await presence(env).recent()).filter(p => p.name.toLowerCase() !== me).slice(0, 50)
+      .map(p => ({ name: p.name, ago: Math.round((now - p.t) / 60e3) }));
+    return json({ me: { name: ctx.who.name, group: ctx.who.group }, players });
+  },
+
+  // take my name off everyone's screens and sign this device out of the site
+  'POST /api/forget': async (req, env, ctx) => {
+    if (ctx.who) await presence(env).forget(ctx.who.name);
+    return json({ ok: true }, 200, { 'Set-Cookie': cookie(ctx.url, GATE_COOKIE, '', 0) });
+  },
+
+  // one store-map build per person per day (resets at midnight Eastern); {end: true} gives
+  // back a build that was cancelled or failed before it saved
+  'POST /api/build': async (req, env, ctx) => {
+    const body = await req.json().catch(() => ({}));
+    const name = buildName(ctx);
+    if (body.end) return json({ ok: await quota(env).buildEnd(name, false) });
+    if (!(await quota(env).buildStart(name)))
+      return json({ error: 'You\'ve already built a store map today. Everyone gets one a day; yours unlocks again at midnight Eastern.', buildUsed: true }, 429);
+    return json({ ok: true });
+  },
 
   'GET /auth/login': async (req, env, ctx) => {
     if (!env.KROGER_CLIENT_ID) return redirect('/?kroger=notconfigured');
@@ -373,6 +496,8 @@ const routes = {
     // only for the store you're shopping, and only something shaped like a map
     if (!layout || layout.v !== 1 || !ctx.session.loc || layout.loc !== ctx.session.loc || !Array.isArray(layout.aisles) || typeof layout.areas !== 'object')
       return json({ error: 'map must be for your current store' }, 400);
+    // saving is what spends today's build, so it has to follow POST /api/build
+    if (!(await quota(env).buildEnd(buildName(ctx), true))) return json({ error: 'Start the build from the store picker first.', buildUsed: true }, 409);
     const out = JSON.stringify(layout);
     await layouts(env).putLayout(layout.loc, out, { built: layout.built, count: layout.count, aisles: layout.aisles.length, name: String(layout.name || '').slice(0, 80) });
     return json({ ok: true, bytes: out.length });
@@ -409,6 +534,8 @@ const routes = {
   },
 };
 
+const buildName = ctx => (ctx.who ? ctx.who.name : 'anyone');
+
 // authorization-code token for cart writes; refreshed automatically
 async function userToken(env, ctx) {
   const s = ctx.session;
@@ -435,12 +562,12 @@ export default {
       url.protocol = 'https:';
       return Response.redirect(url.toString(), 301);
     }
-    const locked = await gate(req, env, url);
+    const { res: locked, who } = await gate(req, env, url);
     if (locked) return locked;
     const route = routes[`${req.method} ${url.pathname}`];
     if (!route) return env.ASSETS.fetch(req);
 
-    const ctx = { url, origin: env.DEV_ORIGIN || url.origin, session: {}, dirty: false };
+    const ctx = { url, origin: env.DEV_ORIGIN || url.origin, session: {}, dirty: false, who };
     const raw = cookies(req)[SESSION_COOKIE];
     if (raw && env.SESSION_KEY) ctx.session = (await unseal(env, raw)) || {};
     let res;

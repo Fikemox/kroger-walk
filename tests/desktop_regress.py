@@ -25,6 +25,8 @@ async def route_api(route):
         await route.fulfill(status=200, content_type='application/json', body=json.dumps({
             'configured': True, 'loggedIn': False, 'locationId': '01400925', 'locationName': 'Kroger Springboro',
             'quota': {'products': {'used': 10, 'limit': 10000, 'left': 9990}, 'locations': {'used': 0, 'limit': 1600, 'left': 1600}, 'cart': {'used': 0, 'limit': 5000, 'left': 5000}}}))
+    elif '/api/hello' in url:   # no other players, so named shoppers don't touch the seeded randomness
+        await route.fulfill(status=200, content_type='application/json', body=json.dumps({'me': None, 'players': []}))
     else:
         await route.continue_()
 async def shot(pg, name):
@@ -46,7 +48,7 @@ async def run(p, w, h):
     errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
     await pg.goto('http://localhost:8642/')
     if await pg.query_selector('input[name=password]'):
-        await pg.fill('input[name=password]', 'localtest-pw'); await pg.click('button'); await pg.wait_for_timeout(800)
+        await pg.fill('input[name=name]', 'Tester'); await pg.fill('input[name=password]', 'localtest-pw'); await pg.click('button'); await pg.wait_for_timeout(800)
     await pg.route('**/api/**', route_api)
     await pg.evaluate("localStorage.clear()")
     await pg.reload(); await pg.wait_for_timeout(1500)

@@ -28,10 +28,18 @@ npx wrangler secret put KROGER_CLIENT_ID
 npx wrangler secret put KROGER_CLIENT_SECRET
 npx wrangler secret put SESSION_KEY      # a different random string than dev
 npx wrangler secret put SITE_PASSWORD    # the password friends type to get in
+npx wrangler secret put SITE_PASSWORD_FAMILY   # optional extra groups, each with its own password
+npx wrangler secret put SITE_PASSWORD_WORK
 npm run deploy
 ```
 
-**Shared password:** visitors get a password page until they enter `SITE_PASSWORD`. After that, a cookie keeps them in for a year. Changing the password (`wrangler secret put SITE_PASSWORD`) locks everyone out until they enter the new one. After 10 wrong guesses, an IP is locked out for 15 minutes. If `SITE_PASSWORD` is missing in production, the site refuses to serve at all rather than staying open.
+**Passwords and names:** visitors get a login page asking for their name and a password. There are three groups, each with its own password: friends (`SITE_PASSWORD`), family (`SITE_PASSWORD_FAMILY`) and work (`SITE_PASSWORD_WORK`). The password decides the group.
+- **Staying in:** a signed cookie holding the group and name keeps them in for a year. Changing one group's password (`wrangler secret put SITE_PASSWORD_FAMILY`) signs out only that group.
+- **Wrong guesses:** after 10 wrong guesses, an IP is locked out for 15 minutes.
+- **Fails closed:** if `SITE_PASSWORD` is missing in production, the site refuses to serve at all rather than staying open.
+- **Names:** up to 16 letters, numbers, spaces and `. ' - _`. Anything that looks like markup or script is refused with a joke, and the game only ever renders names as text anyway.
+- **Other players:** everyone who played in the last 24 hours lends their name to one of the wandering shoppers, in every store and on every layout. Bumping into one starts an encounter with them. Only names are shared, never carts.
+- **Forget me:** the Kroger box (**K**) shows who you're playing as. **Forget me** takes your name off everyone's shoppers right away and signs that device out.
 
 **Shared Kroger limits:** every player uses one Kroger app, so everyone shares its daily limits: 10,000 product searches, 1,600 store lookups and 5,000 cart sends.
 - **Counting:** a Durable Object counts every call the Worker makes to Kroger.
@@ -59,7 +67,7 @@ npm run deploy
 
 Walking into an aisle, or bumping into an outside wall (bakery/deli/meat/seafood, dairy, produce, service), switches to first person.
 
-**Store maps:** press **K** (the store picker), then **Build <store> map**. After a confirmation, about 340 searches (roughly 3% of a day's shared budget) collect the aisle, side, bay and shelf Kroger lists for around 14,000 products at that store. The map is built from them and saved on the server for everyone who shops that store, so it only has to be built once; **rebuild** refreshes it. The same picker switches between **Generic layout** and the store's own layout (remembered per device).
+**Store maps:** press **K** (the store picker), then **Build <store> map**. After a confirmation, about 340 searches (roughly 3% of a day's shared budget) collect the aisle, side, bay and shelf Kroger lists for around 14,000 products at that store. The map is built from them and saved on the server for everyone who shops that store, so it only has to be built once; **rebuild** refreshes it. Each person gets one build a day, resetting at midnight Eastern; a cancelled or failed build doesn't count. The same picker switches between **Generic layout** and the store's own layout (remembered per device).
 - **Aisles:** the store's real numbered aisles, each side stocked with its actual products in planogram order.
 - **Departments:** the areas around the edge (produce, bakery, deli, meat, seafood, dairy, pharmacy, front end).
 - **Find:** searches every product in the store.
@@ -81,7 +89,7 @@ Anything with a mouse gets the desktop game unchanged. Add `?mobile` or `?deskto
 ## Security notes
 
 - The Kroger client secret is a Worker secret and never reaches the browser.
-- Each player's Kroger tokens and store choice live in an AES-GCM-encrypted, `HttpOnly`, `SameSite=Lax` cookie. The server keeps no user data. Rotating `SESSION_KEY` signs everyone out.
+- Each player's Kroger tokens and store choice live in an AES-GCM-encrypted, `HttpOnly`, `SameSite=Lax` cookie. The only thing the server keeps about a player is their name and when they were last on, for 24 hours (and who used today's store-map build). Rotating `SESSION_KEY` signs everyone out.
 - OAuth uses a `state` cookie to block login CSRF.
 - The whole site, game files included, is behind the password gate (`run_worker_first`). `http://` and `www.` redirect to the single `https://` origin.
 - `.dev.vars` is git-ignored.
